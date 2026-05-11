@@ -80,5 +80,5 @@ src/
    ```
    Disarankan PC/Laptop nyala 24/7 kalo gamau bot mati pas device sleep, atau pake termux. Dan pake pm2 biar bot-nya gak mati kalo ada error (yang sekarang juga udah auto restart dari /start-bot.js sih)
 
-## 📝 Lisensi
+## Lisensi
 Project Pribadi / Just for fun. Bebas dipelajari atau dimodif sesuka hati.
