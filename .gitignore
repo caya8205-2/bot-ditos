@@ -8,5 +8,5 @@ temp/
 trivia-score.json
 
 # Legacy / User Data
-index.js
+/index.js
 src/data/songCache.json
