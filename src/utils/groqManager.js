@@ -122,6 +122,7 @@ function getKeyStatus() {
 }
 
 module.exports = {
+    GROQ_KEYS,
     getGroqClient,
     rotateGroqKey,
     callGroqWithFallback,

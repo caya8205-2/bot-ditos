@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 const { replyEmbedAndSave } = require('../../utils/helpers');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
@@ -205,15 +205,15 @@ module.exports = {
 
             await message.reply(`👨‍💻 **Code ${action.charAt(0).toUpperCase() + action.slice(1)}** sedang diproses...`);
 
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
                     messages: [
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: userPrompt }
                     ],
                     temperature: 0.3,
-                    max_completion_tokens: 1000,
+                    max_tokens: 1000,
                 });
             });
 

@@ -4,7 +4,7 @@ const { saveToChannelHistory, isTriviaCorrect, awardTriviaXP, getLevelFromXP, no
 const { shouldBotReply, generateAutoReply } = require('../utils/autoChat');
 const { getPrefix } = require('../utils/settingsManager');
 const { OWNER_ID } = require('../config');
-const { writeLog } = require('../utils/logger');
+const { formatLogTimestamp } = require('../utils/logger');
 function isTriviaCorrectInner(answer, key) {
     return normalizeTrivia(answer) === normalizeTrivia(key);
 }
@@ -20,7 +20,7 @@ module.exports = {
         }
 
         if (message.content) {
-            console.log(`[${new Date().toISOString()}] Message from ${message.author.username}: ${message.content}`);
+            console.log(`[${formatLogTimestamp()}] Message from ${message.author.username}: ${message.content}`);
         }
 
         if (message.author.id === client.user.id) return;

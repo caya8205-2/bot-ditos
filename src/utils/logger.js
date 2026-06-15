@@ -7,6 +7,35 @@ const _originalLog = console.log;
 
 const util = require('util');
 
+function getJakartaDateParts(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Jakarta',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+    }).formatToParts(date);
+
+    return Object.fromEntries(
+        parts
+            .filter((part) => part.type !== 'literal')
+            .map((part) => [part.type, part.value])
+    );
+}
+
+function formatLogTimestamp(date = new Date()) {
+    const { day, month, year, hour, minute, second } = getJakartaDateParts(date);
+    return `${day}/${month}/${year} ${hour}:${minute}:${second} WIB`;
+}
+
+function formatLogDate(date = new Date()) {
+    const { day, month, year } = getJakartaDateParts(date);
+    return `${year}-${month}-${day}`;
+}
+
 // Intercept console.log immediately when module is loaded
 console.log = (...args) => {
     const msg = util.format(...args);
@@ -29,10 +58,10 @@ const applyLogger = (rootDir) => {
 
         const logfile = path.join(
             logDir,
-            `${new Date().toISOString().slice(0, 10)}.log`
+            `${formatLogDate()}.log`
         );
 
-        fs.appendFileSync(logfile, `[${new Date().toISOString()}] ${text}\n`);
+        fs.appendFileSync(logfile, `[${formatLogTimestamp()}] ${text}\n`);
     }
 
     // console.log setelah logger aktif
@@ -55,4 +84,4 @@ const applyLogger = (rootDir) => {
     module.exports.writeLog = writeLog;
 };
 
-module.exports = { setBotName, applyLogger };
+module.exports = { setBotName, applyLogger, formatLogTimestamp, formatLogDate };

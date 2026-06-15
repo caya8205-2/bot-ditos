@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 const { analyzeImageWithGemini } = require('../../utils/geminiManager');
 const { replyEmbedAndSave, saveToChannelHistory, createStatusEmbed } = require('../../utils/helpers');
 const { channelHistory, MAX_CHANNEL_HISTORY } = require('../../data/state');
@@ -77,10 +77,10 @@ module.exports = {
 
             await message.channel.send('🤔 Hmm, let me think...');
 
-            // Call Groq with special ELI5 system prompt
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+            // Call local LLM with special ELI5 system prompt
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
                     messages: [
                         {
                             role: 'system',
@@ -152,7 +152,7 @@ module.exports = {
                         }
                     ],
                     temperature: 0.8,
-                    max_completion_tokens: 800,
+                    max_tokens: 800,
                 });
             });
 
@@ -203,7 +203,7 @@ module.exports = {
 
             if (error.message?.includes('rate_limit')) {
                 return message.reply(
-                    '⚠️ Kena rate limit dari Groq. Tunggu sebentar ya (~30 detik), atau cek: `d!gs`'
+                    '⚠️ Model lokal sedang sibuk. Tunggu sebentar, lalu cek koneksi dengan `d!ls`.'
                 );
             }
 

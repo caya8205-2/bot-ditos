@@ -7,12 +7,12 @@ Bot Discord modular fitur lengkap yang dibangun pake **Discord.js v14**. Bot ini
 **PENTING:** Bot ini dikasih nama "Ditos" karena terinspirasi dari temen gw yang namanya Ditos. Personality AI-nya itu dimodel 100% mirip dia.
 
 Buat yang mau clone repo ini tapi gak sreg sama personality-nya (misal terlalu nyolot atau aneh), kalian bisa ganti System Prompt-nya.
-**Lokasi file:** `src/commands/ai/chat.js`
-Cari bagian `role: 'system'` terus ubah sesuka hati kalian.
+**Lokasi file:** `src/utils/promptBuilder.js`
+Ubah `SHARED_PERSONA` atau prompt khusus `chat`/`auto-chat` sesuai kebutuhan.
 
 ## Fitur-Fitur Kece
 
-### AI Persona (Integrasi Groq)
+### AI Persona (KoboldCpp Lokal)
 - **Ngobrol Santuy**: Pake command `d!chat` atau `d!c`. Bot-nya punya personality unik, lucu, dan kadang nyebelin (in a good way).
 - **Ingetan Kuat**: Punya memori persisten per user & channel. Bisa nyimpen catetan pake `d!rem`, `d!rec`, `d!forg`.
 - **Mata Batin (Vision)**: Bisa "liat" gambar yang kalian kirim dan komentarin.
@@ -63,8 +63,13 @@ src/
    Isi token-token rahasia kalian di sini:
    ```env
    TOKEN=token_discord_kalian (kalo gatau dapet dimana, cari discord dev portal dan buat bot disitu)
-   GROQ_API_KEY=key_groq_kalian
-   GROQ_API_KEY_BACKUP=key_groq_backup_kalian (gw punya backup 3)
+   LOCAL_LLM_BASE_URL=http://127.0.0.1:5001/v1
+   LOCAL_LLM_MODEL=Qwen2-VL-2B-Instruct-Q8_0.gguf #Model yg gw pake
+   LOCAL_LLM_TIMEOUT_MS=120000
+   LOCAL_LLM_FALLBACK_COOLDOWN_MS=300000
+   GROQ_FALLBACK_MODEL=llama-3.3-70b-versatile
+   LOCAL_LLM_INPUT_TOKEN_BUDGET=6000
+   PROMPT_METRICS_ENABLED=true
    GEMINI_API_KEY=key (buat vision)
    WEATHER_API_KEY=key (buat cuaca)
    GOOGLE_CSE_KEY=key (buat google search)
@@ -72,6 +77,9 @@ src/
    SPOTIFY_CLIENT_ID=key (buat music player)
    SPOTIFY_CLIENT_SECRET=key (buat music player)
    ```
+   Jalankan KoboldCpp dengan model lokal.
+   KoboldCpp menjadi provider utama. Jika tidak dapat dihubungi, bot otomatis memakai Groq selama cooldown.
+   Log `[PromptMetrics]` menampilkan estimasi token untuk persona, memory, history, dan input user.
 4. **Jalanin bot-nya**:
    ```bash
    npm start

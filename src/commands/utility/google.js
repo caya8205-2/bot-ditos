@@ -1,5 +1,5 @@
 const { searchWeb, replyAndSave } = require('../../utils/helpers');
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 
 module.exports = {
     name: 'google',
@@ -28,9 +28,9 @@ module.exports = {
                 .map((r, i) => `${i + 1}. ${r.title}\n${r.snippet}\n${r.link}`)
                 .join('\n\n');
 
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
                     messages: [
                         {
                             role: 'system',
@@ -53,7 +53,7 @@ module.exports = {
                         }
                     ],
                     temperature: 0.4,
-                    max_completion_tokens: 300,
+                    max_tokens: 300,
                 });
             });
 

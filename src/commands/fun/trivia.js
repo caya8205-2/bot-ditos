@@ -1,5 +1,5 @@
 const { activeTrivia, triviaTimers, recentTriviaTopics } = require('../../data/state');
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 const { saveToChannelHistory } = require('../../utils/helpers');
 
 module.exports = {
@@ -62,9 +62,9 @@ module.exports = {
             const difficulties = ['mudah tapi gak terlalu mainstream', 'medium difficulty', 'agak challenging'];
             const difficulty = difficulties[Math.floor(Math.random() * difficulties.length)];
 
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
                     messages: [
                         {
                             role: 'system',
@@ -98,7 +98,7 @@ module.exports = {
                         }
                     ],
                     temperature: 0.95,
-                    max_completion_tokens: 200,
+                    max_tokens: 200,
                 });
             });
 

@@ -1,8 +1,7 @@
-const { channelHistory, botActivityTracker, lastUserActivity, getMemoryData } = require('../data/state');
-const { memoryData } = require('../data/state'); // This returns the object AT REQUIRE TIME. 
+const { channelHistory, botActivityTracker } = require('../data/state');
 const state = require('../data/state');
-const { callGroqWithFallback } = require('./groqManager');
-const { MAX_CHANNEL_HISTORY } = require('../data/constants');
+const { callLLMWithFallback, LLM_MODEL } = require('./llmManager');
+const { preparePromptMessages } = require('./promptBuilder');
 
 function filterChannelHistory(messages) {
     return messages.filter(m => {
@@ -25,7 +24,7 @@ const AUTO_CHAT_CONFIG = {
         maxIdleTime: 2 * 60 * 60 * 1000, // 2 jam
     },
     triggerKeywords: [
-        'ditos', 'bot', 'ai', 'gemini', 'groq',
+        'ditos', 'bot', 'ai', 'gemini', 'kobold',
         'coding', 'ngoding', 'error', 'bug', 'help',
         'musik', 'lagu', 'game', 'bot ditos', 'anime', 'gaming', 'geming',
     ],
@@ -125,10 +124,10 @@ async function generateAutoReply(message) {
             memoryContext += `\nInfo global server:\n` + globalMemory.notes.map(n => `- ${n.note}`).join('\n') + `\n`;
         }
 
-        const completion = await callGroqWithFallback(async (groq) => {
-            return await groq.chat.completions.create({
-                model: 'llama-3.3-70b-versatile',
-                messages: [
+            const completion = await callLLMWithFallback(async (client) => {
+            return await client.chat.completions.create({
+                    model: LLM_MODEL,
+                messages: preparePromptMessages([
                     {
                         role: 'system',
                         content:
@@ -176,9 +175,9 @@ async function generateAutoReply(message) {
                         role: 'user',
                         content: `Ini pesan terbaru dari ${message.author.username}:\n"${message.content}"\n\nReply secara natural dan singkat.`
                     }
-                ],
+                ], { label: 'auto-chat' }),
                 temperature: 0.85,
-                max_completion_tokens: 150
+                max_tokens: 150
             });
         });
 

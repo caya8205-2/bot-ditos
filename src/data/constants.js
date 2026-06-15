@@ -20,7 +20,7 @@ const SOUNDBOARD_CLIPS = {
 const COMMAND_LIST = {
     'help': 'Menampilkan semua command',
     'ping': 'Cek latency bot (bukan ping kamu ke Discord)',
-    'chat/c': 'Ngobrol ama Bot Ditos pake LLM Groq',
+    'chat/c': 'Ngobrol ama Bot Ditos pake model lokal',
     'join': 'Bot join vois',
     'leave': 'Bot keluar dari vois',
     'halo': 'Bot menyapa balik',
@@ -46,14 +46,14 @@ const COMMAND_LIST = {
     'roll/dice': 'Roll a Dice',
     'trivia/quiz': 'Random trivia question (jawab lewat reply)',
     'list, cancel': 'List atau batalin reminder yang lagi aktif, tambahin setelah d!remi',
-    'groqstatus/gs': 'Cek apakah API masih bisa dipake',
+    'localstatus/ls': 'Cek koneksi model lokal KoboldCpp',
     'quizscore/qscore': 'Cek skor minigame trivia',
     'quizleaderboard/qlb': 'Cek leaderboard',
     'code/dev': 'Bantu ngoding',
     'eli5': 'Explain Like I\'m 5',
     'ocr': 'Extract text from image',
     'gen': 'Generate image',
-    'testkeys/keystat': 'Cek status semua API Keys',
+    'llmconfig': 'Lihat konfigurasi model lokal',
 };
 
 const TOPICS = [

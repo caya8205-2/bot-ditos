@@ -1,4 +1,4 @@
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 const { replyAndSave } = require('../../utils/helpers');
 
 module.exports = {
@@ -41,9 +41,9 @@ module.exports = {
                 .map((opt, i) => `${i + 1}. ${opt}`)
                 .join('\n');
 
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
                     messages: [
                         {
                             role: 'system',
@@ -65,7 +65,7 @@ module.exports = {
                         }
                     ],
                     temperature: 0.8,
-                    max_completion_tokens: 150
+                    max_tokens: 150
                 });
             });
 
@@ -81,7 +81,7 @@ module.exports = {
                 '```' + listText + '```'
             );
         } catch (err) {
-            console.error('Groq choice error:', err);
+            console.error('Local LLM choice error:', err);
             return message.reply('Ai-nya lagi error pas milih pilihan, coba lagi bentar lagi ya.');
         }
     },

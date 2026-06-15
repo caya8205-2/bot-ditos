@@ -36,7 +36,7 @@ Bot-Ditos
 │   │   │   ├── choice.js (choice command)
 │   │   │   ├── clear.js (clear history obrolan sama bot)
 │   │   │   ├── google.js (google search)
-│   │   │   ├── groqstatus.js (cek API groq)
+│   │   │   ├── groqstatus.js (cek koneksi local LLM)
 │   │   │   ├── help.js (list command)
 │   │   │   ├── ocr.js (OCR image)
 │   │   │   ├── ping.js (cek ping bot)
@@ -61,7 +61,10 @@ Bot-Ditos
 │   │   ├── autoChat.js (logic auto chat)
 │   │   ├── civitaiManager.js
 │   │   ├── geminiManager.js
-│   │   ├── groqManager.js
+│   │   ├── groqManager.js (alias kompatibilitas)
+│   │   ├── localLLMManager.js (integrasi KoboldCpp)
+│   │   ├── llmManager.js (router KoboldCpp dengan fallback Groq)
+│   │   ├── promptBuilder.js (persona, token budget, dan metrik prompt)
 │   │   ├── helpers.js
 │   │   ├── logger.js
 │   │   ├── reminderManager.js

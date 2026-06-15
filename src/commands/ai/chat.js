@@ -1,7 +1,8 @@
 const { channelHistory } = require('../../data/state');
 const state = require('../../data/state'); // Access memoryData via getter/property
 const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTORY } = require('../../data/constants');
-const { callGroqWithFallback } = require('../../utils/groqManager');
+const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
+const { preparePromptMessages } = require('../../utils/promptBuilder');
 const { analyzeImageWithGemini } = require('../../utils/geminiManager');
 const { resolveMemberFuzzy } = require('../../utils/helpers');
 const { OWNER_ID } = require('../../config');
@@ -127,10 +128,10 @@ module.exports = {
                 };
             }
 
-            const completion = await callGroqWithFallback(async (groq) => {
-                return await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: [
+            const completion = await callLLMWithFallback(async (client) => {
+                return await client.chat.completions.create({
+                    model: LLM_MODEL,
+                    messages: preparePromptMessages([
                         {
                             role: 'system',
                             content:
@@ -202,9 +203,9 @@ module.exports = {
                             role: 'user',
                             content: `${message.author.username} bilang: ${finalPrompt}`
                         }
-                    ],
+                    ], { label: 'chat' }),
                     temperature: 0.7,
-                    max_completion_tokens: 800,
+                    max_tokens: 320,
                 });
             });
 
@@ -233,7 +234,7 @@ module.exports = {
             return sendLongReply(message, replyText);
 
         } catch (error) {
-            console.error('Groq error:', error);
+            console.error('Local LLM error:', error);
             return message.reply(`Otak ai nya lagi error nih, coba sebentar lagi ya atau tunggu <@${OWNER_ID}> benerin`);
         }
     },
