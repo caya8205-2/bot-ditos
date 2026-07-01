@@ -13,6 +13,53 @@ const { generateMusicEmbed, getMusicButtons } = require('../../utils/uiHelpers')
 const musicService = require('../../utils/musicService');
 const musicCache = require('../../utils/musicCache');
 
+/**
+ * Buat queue baru untuk guild. Listener player hanya dipasang sekali di sini.
+ * @param {string} guildId
+ * @param {VoiceChannel} voiceChannel
+ * @param {TextChannel} textChannel
+ * @returns {Object} queue
+ */
+function createQueue(guildId, voiceChannel, textChannel) {
+    const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: voiceChannel.guild.id,
+        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+        selfDeaf: false,
+    });
+
+    const player = createAudioPlayer({
+        behaviors: { noSubscriber: NoSubscriberBehavior.Play },
+    });
+
+    connection.subscribe(player);
+
+    const queue = {
+        voiceChannel,
+        textChannel,
+        connection,
+        player,
+        songs: [],
+        volume: 1,
+    };
+
+    musicQueues.set(guildId, queue);
+
+    // Listener dipasang SEKALI per sesi, bukan per lagu
+    player.on(AudioPlayerStatus.Idle, () => {
+        queue.songs.shift();
+        playNext(guildId);
+    });
+
+    player.on('error', (err) => {
+        console.error('[Music] Player error:', err);
+        queue.songs.shift();
+        playNext(guildId);
+    });
+
+    return queue;
+}
+
 module.exports = {
     name: 'play',
     aliases: ['p'],
@@ -56,43 +103,7 @@ module.exports = {
                 let wasEmpty = !queue || !queue.songs || queue.songs.length === 0;
 
                 if (!queue) {
-                    const connection = joinVoiceChannel({
-                        channelId: voiceChannel.id,
-                        guildId: voiceChannel.guild.id,
-                        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                        selfDeaf: false,
-                    });
-
-                    const player = createAudioPlayer({
-                        behaviors: {
-                            noSubscriber: NoSubscriberBehavior.Play,
-                        },
-                    });
-
-                    connection.subscribe(player);
-
-                    queue = {
-                        voiceChannel,
-                        textChannel: message.channel,
-                        connection,
-                        player,
-                        songs: [],
-                        volume: 1, // Default volume
-                    };
-
-                    musicQueues.set(guildId, queue);
-
-                    player.on(AudioPlayerStatus.Idle, () => {
-                        queue.songs.shift();
-                        playNext(guildId);
-                    });
-
-                    player.on('error', (err) => {
-                        console.error('Player error:', err);
-                        queue.songs.shift();
-                        playNext(guildId);
-                    });
-
+                    queue = createQueue(guildId, voiceChannel, message.channel);
                     wasEmpty = true;
                 }
 
@@ -171,39 +182,7 @@ module.exports = {
                     let wasEmpty = !queue || !queue.songs || queue.songs.length === 0;
 
                     if (!queue) {
-                        const connection = joinVoiceChannel({
-                            channelId: voiceChannel.id,
-                            guildId: voiceChannel.guild.id,
-                            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                            selfDeaf: false,
-                        });
-
-                        const player = createAudioPlayer({
-                            behaviors: { noSubscriber: NoSubscriberBehavior.Play },
-                        });
-                        connection.subscribe(player);
-
-                        queue = {
-                            voiceChannel,
-                            textChannel: message.channel,
-                            connection,
-                            player,
-                            songs: [],
-                            volume: 1,
-                        };
-                        musicQueues.set(guildId, queue);
-
-                        // Basic event listeners handling
-                        player.on(AudioPlayerStatus.Idle, () => {
-                            queue.songs.shift();
-                            playNext(guildId);
-                        });
-                        player.on('error', (err) => {
-                            console.error('Player error:', err);
-                            queue.songs.shift();
-                            playNext(guildId);
-                        });
-
+                        queue = createQueue(guildId, voiceChannel, message.channel);
                         wasEmpty = true;
                     }
 
@@ -245,35 +224,7 @@ module.exports = {
                     let wasEmpty = !queue || !queue.songs || queue.songs.length === 0;
 
                     if (!queue) {
-                        const connection = joinVoiceChannel({
-                            channelId: voiceChannel.id,
-                            guildId: voiceChannel.guild.id,
-                            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                            selfDeaf: false,
-                        });
-                        const player = createAudioPlayer({
-                            behaviors: { noSubscriber: NoSubscriberBehavior.Play },
-                        });
-                        connection.subscribe(player);
-                        queue = {
-                            voiceChannel,
-                            textChannel: message.channel,
-                            connection,
-                            player,
-                            songs: [],
-                            volume: 1,
-                        };
-                        musicQueues.set(guildId, queue);
-
-                        player.on(AudioPlayerStatus.Idle, () => {
-                            queue.songs.shift();
-                            playNext(guildId);
-                        });
-                        player.on('error', (err) => {
-                            console.error('Player error:', err);
-                            queue.songs.shift();
-                            playNext(guildId);
-                        });
+                        queue = createQueue(guildId, voiceChannel, message.channel);
                         wasEmpty = true;
                     }
 
@@ -356,44 +307,7 @@ module.exports = {
         const wasEmpty = !queue || !queue.songs || queue.songs.length === 0;
 
         if (!queue) {
-            const connection = joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: voiceChannel.guild.id,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                selfDeaf: false,
-            });
-
-            const player = createAudioPlayer({
-                behaviors: {
-                    noSubscriber: NoSubscriberBehavior.Play,
-                },
-            });
-
-            connection.subscribe(player);
-
-            queue = {
-                voiceChannel,
-                textChannel: message.channel,
-                connection,
-                player,
-                songs: [],
-                volume: 1
-            };
-
-            musicQueues.set(guildId, queue);
-
-            // Reminder: Embed sent in voiceManager on play
-
-            player.on(AudioPlayerStatus.Idle, () => {
-                queue.songs.shift();
-                playNext(guildId);
-            });
-
-            player.on('error', (err) => {
-                console.error('Player error:', err);
-                queue.songs.shift();
-                playNext(guildId);
-            });
+            queue = createQueue(guildId, voiceChannel, message.channel);
         }
 
         queue.songs.push({ title, url, requestedBy: message.author.tag });

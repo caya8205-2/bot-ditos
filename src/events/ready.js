@@ -2,7 +2,8 @@ const { ActivityType } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const { setBotName } = require('../utils/logger');
-const { loadMemory, loadTriviaScore, setMemoryData, setTriviaScore } = require('../utils/helpers');
+const { loadMemory, loadTriviaScore } = require('../utils/helpers');
+const { setMemoryData, setTriviaScore } = require('../data/state');
 const { restartAllReminders } = require('../utils/reminderManager');
 const { TEMP_DIR } = require('../config');
 const SpotifyWebApi = require('spotify-web-api-node');
@@ -23,7 +24,7 @@ async function refreshSpotifyToken() {
 }
 
 module.exports = {
-    name: 'ready',
+    name: 'clientReady',
     once: true,
     async execute(client) {
         setBotName(client.user.username);
@@ -44,7 +45,6 @@ module.exports = {
         // Load Memory
         try {
             const mem = await loadMemory();
-            const { setMemoryData, setTriviaScore } = require('../data/state');
             setMemoryData(mem);
             console.log("[Bot Ditos] Memory loaded:", Object.keys(mem).length, "items");
         } catch (err) {
@@ -53,9 +53,7 @@ module.exports = {
 
         // Load Trivia
         try {
-            const { loadTriviaScore } = require('../utils/helpers');
             const score = await loadTriviaScore();
-            const { setTriviaScore } = require('../data/state');
             setTriviaScore(score);
             console.log("[Bot Ditos] Trivia score loaded");
         } catch (err) {
@@ -73,7 +71,7 @@ module.exports = {
         setInterval(() => {
             const status = botStatus[Math.floor(Math.random() * botStatus.length)];
             client.user.setActivity(status, { type: ActivityType.Listening });
-        }, 5000);
+        }, 30000); // 30s — Discord throttles presence updates anyway
 
         if (process.env.SPOTIFY_CLIENT_ID) {
             refreshSpotifyToken();

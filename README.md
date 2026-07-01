@@ -67,6 +67,11 @@ src/
    LOCAL_LLM_MODEL=Qwen2-VL-2B-Instruct-Q8_0.gguf #Model yg gw pake
    LOCAL_LLM_TIMEOUT_MS=120000
    LOCAL_LLM_FALLBACK_COOLDOWN_MS=300000
+   9ROUTER_BASE_URL=url_gateway_9router_kalian
+   9ROUTER_API_KEY=key_opsional
+   9ROUTER_MODEL=auto
+   9ROUTER_TIMEOUT_MS=120000
+   9ROUTER_FALLBACK_COOLDOWN_MS=60000
    GROQ_FALLBACK_MODEL=llama-3.3-70b-versatile
    LOCAL_LLM_INPUT_TOKEN_BUDGET=6000
    PROMPT_METRICS_ENABLED=true
@@ -78,7 +83,7 @@ src/
    SPOTIFY_CLIENT_SECRET=key (buat music player)
    ```
    Jalankan KoboldCpp dengan model lokal.
-   KoboldCpp menjadi provider utama. Jika tidak dapat dihubungi, bot otomatis memakai Groq selama cooldown.
+   KoboldCpp menjadi provider utama. Jika tidak dapat dihubungi, bot otomatis mencoba 9router dulu, lalu Groq sebagai fallback terakhir.
    Log `[PromptMetrics]` menampilkan estimasi token untuk persona, memory, history, dan input user.
 4. **Jalanin bot-nya**:
    ```bash

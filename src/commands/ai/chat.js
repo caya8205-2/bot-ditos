@@ -205,7 +205,7 @@ module.exports = {
                         }
                     ], { label: 'chat' }),
                     temperature: 0.7,
-                    max_tokens: 320,
+                    max_tokens: 1200,
                 });
             });
 
