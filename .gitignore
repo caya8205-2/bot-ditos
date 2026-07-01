@@ -2,10 +2,12 @@ node_modules/
 .env
 # Local bot state (should not be committed)
 memory.json
+memory.json.migrated
 reminders.json
 Log/
 temp/
 trivia-score.json
+data/
 
 # Legacy / User Data
 legacy/

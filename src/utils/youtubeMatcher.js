@@ -2,10 +2,9 @@
 
 // Spotify → YouTube matcher dengan sistem scoring.
 // Port dari Noctune backend/src/services/youtubeMatcher.ts, diadaptasi ke CommonJS.
-// Logika: multi-query fallback + scoring → cache hasil ke JSON.
+// Logika: multi-query fallback + scoring → cache hasil ke SQLite.
 
-const fs = require('fs');
-const path = require('path');
+const { getDb } = require('./db');
 const { searchTracks } = require('./youtubeResolver');
 
 // p-queue: concurrency control untuk matcher queue (cegah thundering herd)
@@ -21,43 +20,31 @@ async function getMatchQueue() {
     return matchQueue;
 }
 
-// ─── Cache persistence ────────────────────────────────────────────────────────
+// ─── Cache persistence (SQLite) ───────────────────────────────────────────────
 
-const CACHE_FILE = path.join(__dirname, '../../data/spotify-youtube-map.json');
-const CACHE_VERSION = 1;
+let _stmts = null;
 
-function ensureCacheDir() {
-    const dir = path.dirname(CACHE_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadMatchStore() {
-    ensureCacheDir();
-    if (!fs.existsSync(CACHE_FILE)) {
-        return { version: CACHE_VERSION, updatedAt: Date.now(), matches: {} };
-    }
-    try {
-        const loaded = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        if (loaded.version !== CACHE_VERSION) {
-            return { version: CACHE_VERSION, updatedAt: Date.now(), matches: {} };
-        }
-        return loaded;
-    } catch {
-        return { version: CACHE_VERSION, updatedAt: Date.now(), matches: {} };
-    }
-}
-
-function saveMatchStore(store) {
-    ensureCacheDir();
-    store.updatedAt = Date.now();
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(store, null, 2), 'utf-8');
-}
-
-let _matchStore = null;
-
-function getMatchStore() {
-    if (!_matchStore) _matchStore = loadMatchStore();
-    return _matchStore;
+function matchStmts() {
+    if (_stmts) return _stmts;
+    const db = getDb();
+    _stmts = {
+        get: db.prepare(`SELECT * FROM spotify_youtube_map WHERE spotify_id = ?`),
+        upsert: db.prepare(`
+            INSERT INTO spotify_youtube_map
+                (spotify_id, youtube_id, youtube_title, youtube_artist, score, matched_at)
+            VALUES
+                (@spotify_id, @youtube_id, @youtube_title, @youtube_artist, @score, @matched_at)
+            ON CONFLICT(spotify_id) DO UPDATE SET
+                youtube_id    = excluded.youtube_id,
+                youtube_title = excluded.youtube_title,
+                youtube_artist = excluded.youtube_artist,
+                score         = excluded.score,
+                matched_at    = excluded.matched_at
+        `),
+        delete: db.prepare(`DELETE FROM spotify_youtube_map WHERE spotify_id = ?`),
+        count: db.prepare(`SELECT COUNT(*) as total FROM spotify_youtube_map`),
+    };
+    return _stmts;
 }
 
 // ─── Keyword Lists (ported from Noctune) ─────────────────────────────────────
@@ -334,47 +321,44 @@ function compareCandidates(a, b) {
 
 function fromCache(spotifyTrack) {
     if (!spotifyTrack.spotifyId) return null;
-    const cached = getMatchStore().matches[spotifyTrack.spotifyId];
+    const cached = matchStmts().get.get(spotifyTrack.spotifyId);
     if (!cached) return null;
 
     // Rescore cached result to validate it's still acceptable
     const rescored = scoreCandidate(spotifyTrack, {
         ...spotifyTrack,
-        id: cached.youtubeId,
-        title: cached.youtubeTitle,
-        artist: cached.youtubeArtist,
+        id: cached.youtube_id,
+        title: cached.youtube_title,
+        artist: cached.youtube_artist,
         duration: 0,
     });
 
     if (cached.score < 100 || !isAcceptableCandidate(rescored)) {
         console.log(`[matcher] cache rejected (rescore failed) spotifyId=${spotifyTrack.spotifyId}`);
-        delete getMatchStore().matches[spotifyTrack.spotifyId];
-        saveMatchStore(getMatchStore());
+        matchStmts().delete.run(spotifyTrack.spotifyId);
         return null;
     }
 
-    console.log(`[matcher] cache hit spotifyId=${spotifyTrack.spotifyId} → ${cached.youtubeId} (score=${cached.score})`);
+    console.log(`[matcher] cache hit spotifyId=${spotifyTrack.spotifyId} → ${cached.youtube_id} (score=${cached.score})`);
     return {
         ...spotifyTrack,
-        id: cached.youtubeId,
-        youtubeId: cached.youtubeId,
-        youtubeTitle: cached.youtubeTitle,
-        youtubeArtist: cached.youtubeArtist,
+        id: cached.youtube_id,
+        youtubeId: cached.youtube_id,
+        youtubeTitle: cached.youtube_title,
+        youtubeArtist: cached.youtube_artist,
     };
 }
 
 function writeCache(spotifyTrack, candidate) {
     if (!spotifyTrack.spotifyId) return;
-    const store = getMatchStore();
-    store.matches[spotifyTrack.spotifyId] = {
-        spotifyId: spotifyTrack.spotifyId,
-        youtubeId: candidate.track.id,
-        youtubeTitle: candidate.track.title,
-        youtubeArtist: candidate.track.artist,
-        score: candidate.score,
-        matchedAt: Date.now(),
-    };
-    saveMatchStore(store);
+    matchStmts().upsert.run({
+        spotify_id:    spotifyTrack.spotifyId,
+        youtube_id:    candidate.track.id,
+        youtube_title: candidate.track.title,
+        youtube_artist: candidate.track.artist,
+        score:         candidate.score,
+        matched_at:    Date.now(),
+    });
 }
 
 // ─── Main matcher ─────────────────────────────────────────────────────────────
@@ -478,7 +462,7 @@ async function matchSpotifyTracksToYoutube(tracks) {
 // ─── Debug / management ───────────────────────────────────────────────────────
 
 function getMatchCacheStats() {
-    return { total: Object.keys(getMatchStore().matches).length };
+    return { total: matchStmts().count.get().total };
 }
 
 module.exports = {

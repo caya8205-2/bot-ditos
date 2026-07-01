@@ -1,6 +1,6 @@
 {
   "name": "bot-ditos",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "main": "src/index.js",
   "scripts": {
     "start": "node start-bot.js",
@@ -15,6 +15,7 @@
     "@google/generative-ai": "^0.24.1",
     "@snazzah/davey": "^0.1.8",
     "axios": "^1.13.2",
+    "better-sqlite3": "^12.11.1",
     "civitai": "^0.1.15",
     "discord.js": "^14.26.4",
     "dotenv": "^17.2.3",

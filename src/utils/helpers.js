@@ -2,7 +2,6 @@ const fs = require('fs');
 const fsp = fs.promises;
 const { EmbedBuilder } = require('discord.js');
 const { channelHistory, setMemoryData, setTriviaScore } = require('../data/state');
-const { MEMORY_FILE } = require('../config');
 const path = require('path');
 const TRIVIA_FILE_PATH = path.join(__dirname, '../../trivia-score.json');
 
@@ -239,18 +238,47 @@ function getDailyResetInfo() { // Timer daily reset token API
 }
 
 // PERSISTENCE HELPERS
-async function loadMemory() {
+function loadMemory() {
     try {
-        const raw = await fsp.readFile(MEMORY_FILE, 'utf8'); // Requires valid MEMORY_FILE from config
-        return JSON.parse(raw || '{}');
-    } catch {
+        const { getDb } = require('./db');
+        const rows = getDb().prepare('SELECT * FROM memory ORDER BY user_id, sort_order').all();
+        const result = {};
+        for (const row of rows) {
+            result[row.user_id] ??= { username: row.username, notes: [] };
+            result[row.user_id].notes.push({ note: row.note, updatedAt: row.updated_at });
+        }
+        return result;
+    } catch (err) {
+        console.error('[Memory] loadMemory failed:', err.message);
         return {};
     }
 }
 
-async function saveMemory(data) {
+function saveMemory(data) {
     setMemoryData(data); // Sync state
-    await fsp.writeFile(MEMORY_FILE, JSON.stringify(data, null, 2), 'utf8');
+    try {
+        const { getDb } = require('./db');
+        const db = getDb();
+
+        const del = db.prepare('DELETE FROM memory WHERE user_id = ?');
+        const ins = db.prepare(
+            'INSERT INTO memory (user_id, username, note, updated_at, sort_order) VALUES (?, ?, ?, ?, ?)'
+        );
+
+        const run = db.transaction(() => {
+            for (const [userId, userData] of Object.entries(data)) {
+                del.run(userId);
+                const notes = Array.isArray(userData.notes) ? userData.notes : [];
+                notes.forEach((n, i) => {
+                    ins.run(userId, userData.username ?? userId, n.note, n.updatedAt ?? new Date().toISOString(), i);
+                });
+            }
+        });
+
+        run();
+    } catch (err) {
+        console.error('[Memory] saveMemory failed:', err.message);
+    }
 }
 
 async function loadTriviaScore() {

@@ -9,7 +9,7 @@ module.exports = {
 
     // Paths
     TEMP_DIR: path.join(__dirname, '../temp'),
-    MEMORY_FILE: path.join(__dirname, '../memory.json'),
+    DB_FILE:  path.join(__dirname, '../data/bot.db'),
     getPath: (filename) => path.join(__dirname, '../..', filename),
     ROOT_DIR: path.resolve(__dirname, '../')
 };
