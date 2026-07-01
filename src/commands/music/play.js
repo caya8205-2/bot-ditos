@@ -6,7 +6,6 @@ const {
     NoSubscriberBehavior,
     AudioPlayerStatus,
 } = require('@discordjs/voice');
-const ytdlExec = require('yt-dlp-exec'); // fallback untuk YouTube playlist
 const { musicQueues } = require('../../data/state');
 const { playNext, resolveSong } = require('../../utils/voiceManager');
 const { spotifyApi } = require('../../utils/spotifyManager');
@@ -84,37 +83,16 @@ module.exports = {
             try {
                 await message.reply('Lagi ngambil data playlist, tunggu bentar...');
 
-                // Coba youtubei.js dulu, fallback ke yt-dlp-exec
-                let playlistName;
-                let newSongs;
-
-                try {
-                    const result = await youtubeResolver.getYoutubePlaylistTracks(query, 100);
-                    playlistName = result.name;
-                    newSongs = result.tracks.map(t => ({
-                        title: t.title,
-                        artist: t.artist,
-                        videoId: t.id,
-                        url: `https://www.youtube.com/watch?v=${t.id}`,
-                        duration: t.duration,
-                        requestedBy: message.author.tag,
-                    }));
-                } catch (ytErr) {
-                    console.warn('[Play] youtubei playlist failed, fallback ke yt-dlp:', ytErr.message);
-                    const output = await ytdlExec(query, {
-                        flatPlaylist: true,
-                        dumpSingleJson: true,
-                        noWarnings: true,
-                    });
-                    if (!output?.entries) throw new Error('Playlist kosong atau gak kebaca.');
-                    playlistName = output.title || 'YouTube Playlist';
-                    newSongs = output.entries.map(item => ({
-                        title: item.title,
-                        videoId: item.id,
-                        url: item.url || `https://www.youtube.com/watch?v=${item.id}`,
-                        requestedBy: message.author.tag,
-                    }));
-                }
+                const result = await youtubeResolver.getYoutubePlaylistTracks(query, 100);
+                const playlistName = result.name;
+                const newSongs = result.tracks.map(t => ({
+                    title: t.title,
+                    artist: t.artist,
+                    videoId: t.id,
+                    url: `https://www.youtube.com/watch?v=${t.id}`,
+                    duration: t.duration,
+                    requestedBy: message.author.tag,
+                }));
 
                 let queue = musicQueues.get(guildId);
                 const wasEmpty = !queue?.songs?.length;

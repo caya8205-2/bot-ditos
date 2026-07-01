@@ -31,7 +31,6 @@
     "sodium-native": "^5.0.10",
     "spotify-web-api-node": "^5.0.2",
     "youtubei.js": "^17.2.0",
-    "yt-dlp-exec": "^1.0.2",
     "yt-search": "^2.13.1",
     "ytpl": "^2.3.0"
   },
