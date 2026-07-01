@@ -143,29 +143,16 @@ async function playNext(guildId) {
         // Dapatkan stream URL (prefetch → cache → resolve)
         const streamUrl = await getStreamUrl(song);
 
-        // Fetch stream dan pipe ke FFmpeg → Opus → Discord
-        const response = await fetch(streamUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://www.youtube.com/',
-                'Origin': 'https://www.youtube.com',
-            },
-        });
 
-        if (!response.ok) {
-            if (response.status === 403) {
-                // URL expired — invalidate cache dan retry
-                musicCache.refreshTrackUrl(song.videoId, null);
-                throw new Error('Stream 403 Forbidden — URL expired, will retry');
-            }
-            throw new Error(`Stream fetch failed: ${response.status}`);
-        }
-
-        const { Readable } = require('stream');
-        const inputStream = Readable.fromWeb(response.body);
-
+        // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
+        // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
         const child = spawn(ffmpegPath, [
-            '-i', 'pipe:0',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers',
+            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
+            '-i', streamUrl,
             '-analyzeduration', '0',
             '-loglevel', 'warning',
             '-c:a', 'libopus',
@@ -173,16 +160,17 @@ async function playNext(guildId) {
             '-ar', '48000',
             '-ac', '2',
             'pipe:1',
-        ], { stdio: ['pipe', 'pipe', 'pipe'] });
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
-        inputStream.pipe(child.stdin);
+        child.on('error', (err) => {
+            console.error('[Music] FFmpeg process error:', err.message);
+        });
 
-        child.stdin.on('error', (err) => {
-            if (err.code !== 'EPIPE') console.error('[FFmpeg stdin] Error:', err);
+        child.stderr.on('data', (data) => {
+            const msg = data.toString().trim();
+            if (msg) console.warn(`[FFmpeg] ${msg}`);
         });
-        inputStream.on('error', () => {
-            try { child.kill(); } catch {}
-        });
+
 
         const resource = createAudioResource(child.stdout, {
             inputType: StreamType.OggOpus,
