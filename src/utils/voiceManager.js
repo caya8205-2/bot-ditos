@@ -1,3 +1,5 @@
+'use strict';
+
 const {
     createAudioResource,
     StreamType,
@@ -5,91 +7,127 @@ const {
     joinVoiceChannel,
     createAudioPlayer,
     NoSubscriberBehavior,
-    AudioPlayerStatus
+    AudioPlayerStatus,
 } = require('@discordjs/voice');
-const ytSearch = require('yt-search');
-const ytdlExec = require('yt-dlp-exec'); // Keep for backup or specific needs
 const fs = require('fs');
 const path = require('path');
 const { exec, spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
-const { musicQueues, songCache, saveSongToCache } = require('../data/state');
+const { musicQueues } = require('../data/state');
 const { SOUNDBOARD_CLIPS } = require('../data/constants');
 const { GTTS_PATH, TEMP_DIR } = require('../config');
 const { generateMusicEmbed, getMusicButtons } = require('./uiHelpers');
-const musicService = require('./musicService'); // [CRITICAL] Use this for efficient streaming
+const youtubeResolver = require('./youtubeResolver');
 const musicCache = require('./musicCache');
+const { getPrefetched, consumePrefetch, schedulePrefetch } = require('./prefetchManager');
 
+// ─── Song Resolution ──────────────────────────────────────────────────────────
+
+/**
+ * Dapatkan stream URL untuk sebuah lagu.
+ * Priority: prefetch memory → persistent cache (fresh) → resolve baru via youtubei.js
+ *
+ * @param {object} song - { videoId, title, url? }
+ * @returns {Promise<string>} stream URL
+ */
+async function getStreamUrl(song) {
+    const { videoId, title } = song;
+
+    // 1. Prefetch memory hit — instant
+    const prefetchHit = getPrefetched(videoId);
+    if (prefetchHit) {
+        console.log(`[Music] Prefetch hit → instant start: ${title}`);
+        consumePrefetch(videoId);
+        return prefetchHit.audioUrl;
+    }
+
+    // 2. Persistent cache — fresh URL
+    const cached = musicCache.getCachedById(videoId);
+    if (cached && musicCache.isUrlFresh(cached)) {
+        console.log(`[Music] Cache hit: ${title}`);
+        return cached.audioUrl;
+    }
+
+    // 3. Resolve baru via youtubei.js
+    console.log(`[Music] Resolving stream: ${title}`);
+    const audio = await youtubeResolver.resolveAudioUrl(videoId);
+
+    // Simpan ke persistent cache
+    if (cached) {
+        musicCache.refreshTrackUrl(videoId, audio.url);
+    } else {
+        musicCache.upsertTrack(song.url || `https://www.youtube.com/watch?v=${videoId}`, {
+            id: videoId,
+            title: title || videoId,
+            artist: song.artist || 'Unknown',
+            duration: song.duration || 0,
+            thumbnail: song.thumbnail || '',
+        }, audio.url, song.spotifyId);
+    }
+
+    return audio.url;
+}
+
+// ─── Resolve song metadata (untuk lagu yang belum punya videoId) ──────────────
+
+/**
+ * Resolve videoId dari lagu yang hanya punya title/search query.
+ * @param {object} song
+ */
 async function resolveSong(song) {
-    if (!song || song.url) return song; // Already resolved or null
+    if (song.videoId) return song;
 
-    // [CACHE CHECK]
-    if (songCache.has(song.title)) {
-        console.log(`[Music] Cache hit: ${song.title}`);
-        song.url = songCache.get(song.title);
+    // Cache by query dulu
+    const cachedByQuery = musicCache.getCachedByQuery(song.title);
+    if (cachedByQuery) {
+        console.log(`[Music] Query cache hit: ${song.title}`);
+        song.videoId = cachedByQuery.id;
+        song.title = cachedByQuery.title;
+        song.artist = cachedByQuery.artist;
         song.isResolved = true;
-        // Try to get Video ID from URL if possible
-        if (song.url.includes('v=')) song.videoId = song.url.split('v=')[1].split('&')[0];
-        else if (song.url.includes('youtu.be/')) song.videoId = song.url.split('youtu.be/')[1].split('?')[0];
         return song;
     }
 
-    try {
-        console.log(`[Music] Resolving: ${song.title}`);
-        // Use musicService search for consistent scoring
-        const res = await musicService.searchTrack(song.title);
+    // Search via youtubei.js
+    console.log(`[Music] Searching: ${song.title}`);
+    const results = await youtubeResolver.searchTracks(song.title, 5);
+    if (!results.length) return null;
 
-        if (res) {
-            song.url = res.url;
-            song.videoId = res.videoId;
-            song.title = res.title;
-            song.isResolved = true;
+    const best = results[0];
+    song.videoId = best.id;
+    song.title = best.title;
+    song.artist = best.artist;
+    song.duration = best.duration;
+    song.isResolved = true;
 
-            // [CACHE SAVE]
-            saveSongToCache(song.title, res.url);
-
-            // Save to Learning Cache too if needed
-            if (song.spotifyId) {
-                musicCache.setLearnedMatch(song.spotifyId, res.videoId);
-            }
-
-            console.log(`[Music] Resolved & Cached: ${song.title}`);
-            return song;
-        } else {
-            console.warn(`[Music] Failed to resolve: ${song.title}`);
-            return null;
-        }
-    } catch (err) {
-        console.error(`[Music] Resolve error for ${song.title}:`, err);
-        return null;
-    }
+    return song;
 }
+
+// ─── Core playback ────────────────────────────────────────────────────────────
 
 async function playNext(guildId) {
     const queue = musicQueues.get(guildId);
 
     if (!queue || !queue.songs || queue.songs.length === 0) {
-        if (queue && queue.stopOnIdle) {
+        if (queue?.stopOnIdle) {
             console.log(`[Music] Stopped manually in ${guildId}. Staying in VC.`);
             queue.stopOnIdle = false;
             return;
         }
         console.log(`[Music] Queue kosong di guild ${guildId}, stop.`);
-        if (queue && queue.connection) {
-            queue.connection.destroy();
-        }
+        queue?.connection?.destroy();
         musicQueues.delete(guildId);
         return;
     }
 
     let song = queue.songs[0];
 
-    // [JIT RESOLVE]
-    if (!song.url) {
+    // Resolve videoId jika belum ada (lazy Spotify tracks)
+    if (!song.videoId) {
         if (song.isResolving) {
-            console.log(`[Music] JIT: Song is currently pre-fetching.`);
+            console.log(`[Music] JIT: masih resolving ${song.title}...`);
         }
-        console.log(`[Music] PlayNext: URL Missing for ${song.title}. Triggering JIT Resolve.`);
+        console.log(`[Music] JIT resolve: ${song.title}`);
         const resolved = await resolveSong(song);
         if (!resolved) {
             queue.textChannel.send(`⚠️ Gagal memutar **${song.title}**, gak nemu di YouTube. Skip.`);
@@ -97,65 +135,53 @@ async function playNext(guildId) {
             return playNext(guildId);
         }
         song = resolved;
-    } else {
-        console.log(`[Music] PlayNext: URL Ready! (Instant Start) -> ${song.title}`);
     }
 
     queue.nowPlaying = song;
 
     try {
-        // [VALIDATION] Ensure videoId exists
-        if (!song.videoId && song.url) {
-            if (song.url.includes('v=')) song.videoId = song.url.split('v=')[1].split('&')[0];
-            else if (song.url.includes('youtu.be/')) song.videoId = song.url.split('youtu.be/')[1].split('?')[0];
-        }
+        // Dapatkan stream URL (prefetch → cache → resolve)
+        const streamUrl = await getStreamUrl(song);
 
-        if (!song.videoId) throw new Error("Could not extract Video ID");
-
-        console.log(`[Music] Streaming: ${song.title}`);
-        const streamUrl = await musicService.getStreamUrl(song.videoId);
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com'
-        };
-
-        const response = await fetch(streamUrl, { headers });
+        // Fetch stream dan pipe ke FFmpeg → Opus → Discord
+        const response = await fetch(streamUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com',
+            },
+        });
 
         if (!response.ok) {
             if (response.status === 403) {
-                console.warn("[Music] 403 Forbidden on Cached URL. Invalidating and Retrying...");
-                musicCache.streamCache.delete(song.videoId); // Manually clear
-                throw new Error("Stream 403 Forbidden");
+                // URL expired — invalidate cache dan retry
+                musicCache.refreshTrackUrl(song.videoId, null);
+                throw new Error('Stream 403 Forbidden — URL expired, will retry');
             }
             throw new Error(`Stream fetch failed: ${response.status}`);
         }
 
         const { Readable } = require('stream');
-        let inputStream = Readable.fromWeb(response.body);
+        const inputStream = Readable.fromWeb(response.body);
 
-        // FFmpeg Logic: Decode input -> Encode Opus -> Output Ogg
         const child = spawn(ffmpegPath, [
             '-i', 'pipe:0',
             '-analyzeduration', '0',
             '-loglevel', 'warning',
-            '-c:a', 'libopus',   // Encode to Opus
-            '-f', 'opus',        // Ogg Opus container
+            '-c:a', 'libopus',
+            '-f', 'opus',
             '-ar', '48000',
             '-ac', '2',
-            'pipe:1'
+            'pipe:1',
         ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
         inputStream.pipe(child.stdin);
 
-        // [FIX] Prevent EPIPE crash if FFmpeg exits early
         child.stdin.on('error', (err) => {
-            if (err.code === 'EPIPE') return;
-            console.error('[FFmpeg Stdin] Error:', err);
+            if (err.code !== 'EPIPE') console.error('[FFmpeg stdin] Error:', err);
         });
-
-        inputStream.on('error', err => {
-            try { child.kill(); } catch (e) { }
+        inputStream.on('error', () => {
+            try { child.kill(); } catch {}
         });
 
         const resource = createAudioResource(child.stdout, {
@@ -166,48 +192,37 @@ async function playNext(guildId) {
         queue.player.play(resource);
         resource.volume.setVolume(queue.volume || 1);
 
+        // Catat play count
+        musicCache.recordPlay(song.videoId);
+
+        // Send embed
         const embed = generateMusicEmbed(guildId);
         if (embed && queue.textChannel) {
             queue.textChannel.send({
                 embeds: [embed],
-                components: getMusicButtons(guildId)
-            }).catch(err => console.error("Gagal kirim embed music:", err));
+                components: getMusicButtons(guildId),
+            }).catch(err => console.error('[Music] Gagal kirim embed:', err));
         }
 
-        // [PROACTIVE PRE-FETCH]
-        if (queue.songs.length > 1) {
-            const nextSong = queue.songs[1];
-            if (!nextSong.displayUrl && !nextSong.videoId && !nextSong.isResolving) {
-                console.log(`[Music] Prefetch START: ${nextSong.title}`);
-                nextSong.isResolving = true;
+        // Prefetch lagu ke-2 dan ke-3 dalam queue
+        const upcomingIds = queue.songs.slice(1, 4)
+            .filter(s => s.videoId)
+            .map(s => s.videoId);
 
-                // Run in background
-                (async () => {
-                    try {
-                        const res = await resolveSong(nextSong);
-                        if (res && res.videoId) {
-                            // ALSO PRE-FETCH AUDIO STREAM
-                            // This is key for "Instant Start"
-                            await musicService.getStreamUrl(res.videoId);
-                            console.log(`[Music] Prefetch DONE (Audio Ready): ${nextSong.title}`);
-                        }
-                    } catch (e) {
-                        console.error("[Prefetch] Failed", e);
-                    } finally {
-                        nextSong.isResolving = false;
-                    }
-                })();
-            }
+        if (upcomingIds.length > 0) {
+            schedulePrefetch(upcomingIds).catch(err =>
+                console.warn('[prefetch] schedule error:', err.message)
+            );
         }
 
     } catch (err) {
-        console.error('PlayNext error:', err);
-        // Invalid URL or error? Try standard ytdl-exec as LAST RESORT fallback?
-        // Or just skip.
-        queue.songs.shift(); // remove failed song
-        setTimeout(() => playNext(guildId), 1000); // Retry next
+        console.error('[Music] playNext error:', err.message);
+        queue.songs.shift();
+        setTimeout(() => playNext(guildId), 1000);
     }
 }
+
+// ─── Soundboard ───────────────────────────────────────────────────────────────
 
 async function playLocalSound(voiceChannel, key, textChannel) {
     const clip = SOUNDBOARD_CLIPS[key];
@@ -220,7 +235,7 @@ async function playLocalSound(voiceChannel, key, textChannel) {
         return;
     }
 
-    let connection = getVoiceConnection(voiceChannel.guild.id) || joinVoiceChannel({
+    const connection = getVoiceConnection(voiceChannel.guild.id) || joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: voiceChannel.guild.id,
         adapterCreator: voiceChannel.guild.voiceAdapterCreator,
@@ -240,6 +255,8 @@ async function playLocalSound(voiceChannel, key, textChannel) {
     player.once(AudioPlayerStatus.Idle, () => player.stop());
 }
 
+// ─── TTS ──────────────────────────────────────────────────────────────────────
+
 async function ttsGoogle(text, outputFileName) {
     return new Promise((resolve, reject) => {
         const safe = text.replace(/"/g, '\\"');
@@ -252,4 +269,4 @@ async function ttsGoogle(text, outputFileName) {
     });
 }
 
-module.exports = { playNext, playLocalSound, ttsGoogle };
+module.exports = { playNext, playLocalSound, ttsGoogle, resolveSong };
