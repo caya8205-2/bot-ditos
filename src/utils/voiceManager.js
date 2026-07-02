@@ -227,6 +227,13 @@ async function playNext(guildId) {
 
         console.log(`[Music] Audio resource created, starting playback...`);
 
+        // Check connection state
+        const connState = queue.connection.state.status;
+        console.log(`[Music] Voice connection state: ${connState}`);
+        if (connState !== 'ready') {
+            console.warn(`[Music] Connection not ready! Current state: ${connState}`);
+        }
+
         queue.player.play(resource);
         resource.volume.setVolume(queue.volume || 1);
 

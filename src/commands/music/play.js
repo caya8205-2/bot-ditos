@@ -38,6 +38,16 @@ function createQueue(guildId, voiceChannel, textChannel) {
 
     connection.subscribe(player);
 
+    // Log connection state
+    console.log(`[Music] Initial connection state: ${connection.state.status}`);
+    
+    connection.on('stateChange', (oldState, newState) => {
+        console.log(`[Music] Connection state: ${oldState.status} → ${newState.status}`);
+        if (newState.status === 'disconnected') {
+            console.warn(`[Music] Voice disconnected! Reason:`, newState.reason);
+        }
+    });
+
     const queue = {
         voiceChannel,
         textChannel,
