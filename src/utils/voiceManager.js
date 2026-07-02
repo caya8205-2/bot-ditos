@@ -147,6 +147,8 @@ async function playNext(guildId) {
         // Dapatkan stream URL (prefetch → cache → resolve)
         const streamUrl = await getStreamUrl(song);
 
+        console.log(`[Music] Starting playback: ${song.title} (${song.videoId})`);
+        console.log(`[Music] Stream URL: ${streamUrl.substring(0, 80)}...`);
 
         // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
         // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
@@ -158,7 +160,7 @@ async function playNext(guildId) {
             'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
             '-i', streamUrl,
             '-analyzeduration', '0',
-            '-loglevel', 'warning',
+            '-loglevel', 'error',
             '-c:a', 'libopus',
             '-f', 'opus',
             '-ar', '48000',
@@ -166,20 +168,40 @@ async function playNext(guildId) {
             'pipe:1',
         ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
+        let ffmpegErrorOutput = '';
+
         child.on('error', (err) => {
             console.error('[Music] FFmpeg process error:', err.message);
+            ffmpegErrorOutput += `Process error: ${err.message}\n`;
         });
 
         child.stderr.on('data', (data) => {
             const msg = data.toString().trim();
-            if (msg) console.warn(`[FFmpeg] ${msg}`);
+            ffmpegErrorOutput += msg + '\n';
+            if (msg) console.error(`[FFmpeg] ${msg}`);
         });
+
+        child.on('close', (code) => {
+            if (code !== 0 && code !== null) {
+                console.error(`[FFmpeg] Exited with code ${code}`);
+                if (ffmpegErrorOutput) {
+                    console.error(`[FFmpeg] Error output:\n${ffmpegErrorOutput}`);
+                }
+            }
+        });
+
+        // Check if stdout is readable
+        if (!child.stdout || child.stdout.destroyed) {
+            throw new Error('FFmpeg stdout not available');
+        }
 
 
         const resource = createAudioResource(child.stdout, {
             inputType: StreamType.OggOpus,
             inlineVolume: true,
         });
+
+        console.log(`[Music] Audio resource created, starting playback...`);
 
         queue.player.play(resource);
         resource.volume.setVolume(queue.volume || 1);
