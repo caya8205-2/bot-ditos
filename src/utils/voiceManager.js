@@ -207,15 +207,9 @@ async function playNext(guildId) {
         // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
         // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
         const child = spawn(ffmpegPath, [
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-headers',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
             '-i', streamUrl,
             '-analyzeduration', '0',
             '-loglevel', 'error',
-            '-c:a', 'libopus',
             '-f', 'opus',
             '-ar', '48000',
             '-ac', '2',
@@ -253,7 +247,7 @@ async function playNext(guildId) {
 
 
         const resource = createAudioResource(child.stdout, {
-            inputType: StreamType.OggOpus,
+            inputType: StreamType.Arbitrary, // Let discord.js detect format
             inlineVolume: true,
         });
 
