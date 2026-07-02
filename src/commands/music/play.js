@@ -43,13 +43,21 @@ function createQueue(guildId, voiceChannel, textChannel) {
 
     // Listener dipasang SEKALI per sesi
     player.on(AudioPlayerStatus.Idle, () => {
-        queue.songs.shift();
+        // Only shift if there was a song playing
+        if (queue.nowPlaying) {
+            console.log(`[Music] Song finished: ${queue.nowPlaying.title}`);
+            queue.songs.shift();
+            queue.nowPlaying = null;
+        }
         playNext(guildId);
     });
 
     player.on('error', (err) => {
         console.error('[Music] Player error:', err);
-        queue.songs.shift();
+        if (queue.songs.length > 0) {
+            queue.songs.shift();
+        }
+        queue.nowPlaying = null;
         playNext(guildId);
     });
 

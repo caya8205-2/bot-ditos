@@ -112,6 +112,9 @@ async function resolveSong(song) {
 async function playNext(guildId) {
     const queue = musicQueues.get(guildId);
 
+    console.log(`[Music] playNext called for guild ${guildId}`);
+    console.log(`[Music] Queue state: ${queue ? `${queue.songs.length} songs` : 'no queue'}`);
+
     if (!queue || !queue.songs || queue.songs.length === 0) {
         if (queue?.stopOnIdle) {
             console.log(`[Music] Stopped manually in ${guildId}. Staying in VC.`);
