@@ -206,6 +206,9 @@ async function playNext(guildId) {
 
         // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
         // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
+        console.log(`[Music] Spawning FFmpeg with path: ${ffmpegPath}`);
+        console.log(`[Music] FFmpeg args: -i ${streamUrl.substring(0, 50)}... -analyzeduration 0 -loglevel error -f opus -ar 48000 -ac 2 pipe:1`);
+        
         const child = spawn(ffmpegPath, [
             '-i', streamUrl,
             '-analyzeduration', '0',
@@ -215,6 +218,8 @@ async function playNext(guildId) {
             '-ac', '2',
             'pipe:1',
         ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        console.log(`[Music] FFmpeg PID: ${child.pid}`);
 
         let ffmpegErrorOutput = '';
 
