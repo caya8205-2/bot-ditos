@@ -157,8 +157,19 @@ async function playNext(guildId) {
         try {
             const urlObj = new URL(streamUrl);
             console.log(`[Music] URL host: ${urlObj.hostname}`);
+            
+            // Test URL accessibility with HEAD request
+            console.log(`[Music] Testing URL accessibility...`);
+            const testRes = await fetch(streamUrl, { 
+                method: 'HEAD',
+                signal: AbortSignal.timeout(3000)
+            });
+            console.log(`[Music] URL test: ${testRes.status} ${testRes.statusText}`);
+            console.log(`[Music] Content-Length: ${testRes.headers.get('content-length')}`);
+            console.log(`[Music] Content-Type: ${testRes.headers.get('content-type')}`);
         } catch (urlErr) {
-            throw new Error(`Invalid stream URL: ${urlErr.message}`);
+            console.error(`[Music] URL test failed: ${urlErr.message}`);
+            throw new Error(`Stream URL not accessible: ${urlErr.message}`);
         }
 
         // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
