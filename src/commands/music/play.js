@@ -42,6 +42,10 @@ function createQueue(guildId, voiceChannel, textChannel) {
     musicQueues.set(guildId, queue);
 
     // Listener dipasang SEKALI per sesi
+    player.on('stateChange', (oldState, newState) => {
+        console.log(`[Music] Player state: ${oldState.status} → ${newState.status}`);
+    });
+
     player.on(AudioPlayerStatus.Idle, () => {
         // Only shift if there was a song playing
         if (queue.nowPlaying) {

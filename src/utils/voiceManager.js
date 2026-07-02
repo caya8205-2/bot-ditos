@@ -209,6 +209,15 @@ async function playNext(guildId) {
         queue.player.play(resource);
         resource.volume.setVolume(queue.volume || 1);
 
+        // Log player state changes
+        const currentState = queue.player.state.status;
+        console.log(`[Music] Player state after play(): ${currentState}`);
+        
+        // Wait a bit to see if player actually starts
+        setTimeout(() => {
+            console.log(`[Music] Player state after 100ms: ${queue.player.state.status}`);
+        }, 100);
+
         // Catat play count
         musicCache.recordPlay(song.videoId);
 
