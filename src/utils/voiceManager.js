@@ -146,6 +146,38 @@ async function playNext(guildId) {
 
     queue.nowPlaying = song;
 
+    // Wait for connection to be ready
+    if (queue.connection.state.status !== 'ready') {
+        console.log(`[Music] Waiting for connection to be ready... (current: ${queue.connection.state.status})`);
+        await new Promise((resolve) => {
+            if (queue.connection.state.status === 'ready') {
+                resolve();
+            } else {
+                const onReady = () => {
+                    queue.connection.off('stateChange', onStateChange);
+                    resolve();
+                };
+                const onStateChange = (oldState, newState) => {
+                    if (newState.status === 'ready') {
+                        onReady();
+                    } else if (newState.status === 'disconnected' || newState.status === 'destroyed') {
+                        queue.connection.off('stateChange', onStateChange);
+                        resolve(); // Resolve anyway to prevent hang
+                    }
+                };
+                queue.connection.on('stateChange', onStateChange);
+                
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    queue.connection.off('stateChange', onStateChange);
+                    console.warn(`[Music] Connection ready timeout, proceeding anyway...`);
+                    resolve();
+                }, 5000);
+            }
+        });
+        console.log(`[Music] Connection ready! Proceeding with playback...`);
+    }
+
     try {
         // Dapatkan stream URL (prefetch → cache → resolve)
         const streamUrl = await getStreamUrl(song);
