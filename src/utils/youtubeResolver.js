@@ -18,7 +18,7 @@ const metrics = require('./resolverMetrics');
 // Note: Cookies valid ~1 tahun, tapi bisa expire lebih cepat kalau YouTube detect abuse.
 // Fallback yt-dlp masih aktif sebagai last resort (lambat, tapi lebih reliable dari nothing).
 
-const YOUTUBEI_CLIENTS = ['ANDROID', 'IOS', 'WEB', 'MWEB', 'TV_SIMPLY', 'ANDROID_VR'];
+const YOUTUBEI_CLIENTS = ['WEB', 'ANDROID', 'IOS'];
 const URL_EXPIRY_MS = (5 * 60 + 45) * 60 * 1000; // 5h45m — conservative YT URL expiry
 
 // Singleton — lazy init
