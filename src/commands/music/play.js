@@ -17,6 +17,14 @@ const { schedulePrefetch } = require('../../utils/prefetchManager');
 // ─── Helper: buat queue baru (listener dipasang sekali) ──────────────────────
 
 function createQueue(guildId, voiceChannel, textChannel) {
+    // Check if queue already exists (reuse connection & player)
+    const existing = musicQueues.get(guildId);
+    if (existing) {
+        console.log(`[Music] Reusing existing queue for guild ${guildId}`);
+        existing.textChannel = textChannel; // Update text channel
+        return existing;
+    }
+
     const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: voiceChannel.guild.id,
@@ -47,11 +55,17 @@ function createQueue(guildId, voiceChannel, textChannel) {
     });
 
     player.on(AudioPlayerStatus.Idle, () => {
+        console.log(`[Music] Idle event fired for guild ${guildId}`);
+        console.log(`[Music] nowPlaying: ${queue.nowPlaying ? queue.nowPlaying.title : 'null'}`);
+        console.log(`[Music] songs.length: ${queue.songs.length}`);
+        
         // Only shift if there was a song playing
         if (queue.nowPlaying) {
             console.log(`[Music] Song finished: ${queue.nowPlaying.title}`);
             queue.songs.shift();
             queue.nowPlaying = null;
+        } else {
+            console.log(`[Music] Idle fired but no nowPlaying - skipping shift`);
         }
         playNext(guildId);
     });
@@ -65,6 +79,7 @@ function createQueue(guildId, voiceChannel, textChannel) {
         playNext(guildId);
     });
 
+    console.log(`[Music] Created new queue for guild ${guildId}`);
     return queue;
 }
 
