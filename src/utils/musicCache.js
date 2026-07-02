@@ -80,22 +80,51 @@ function rowToTrack(row) {
 
 /** Cek apakah URL stream masih valid (belum expired). */
 function isUrlFresh(track) {
-    return Boolean(track?.audioUrl) && Date.now() < track.audioUrlExpiry;
+    if (!track?.audioUrl) return false;
+    
+    // IP-locked URLs (contain &ip= parameter) are never fresh
+    // These URLs are tied to specific client IP and will 403 from different IPs
+    if (track.audioUrl.includes('&ip=')) {
+        return false;
+    }
+    
+    return Date.now() < track.audioUrlExpiry;
 }
 
 /** Lookup by search query string. */
 function getCachedByQuery(query) {
-    return rowToTrack(stmts().getByQuery.get(hashQuery(query)));
+    const track = rowToTrack(stmts().getByQuery.get(hashQuery(query)));
+    
+    // Auto-invalidate IP-locked URLs
+    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
+        track.audioUrlExpiry = 0; // Mark as expired
+    }
+    
+    return track;
 }
 
 /** Lookup langsung by videoId. */
 function getCachedById(videoId) {
-    return rowToTrack(stmts().getById.get(videoId));
+    const track = rowToTrack(stmts().getById.get(videoId));
+    
+    // Auto-invalidate IP-locked URLs
+    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
+        track.audioUrlExpiry = 0; // Mark as expired
+    }
+    
+    return track;
 }
 
 /** Lookup by Spotify track ID. */
 function getCachedBySpotifyId(spotifyId) {
-    return rowToTrack(stmts().getBySpotifyId.get(spotifyId));
+    const track = rowToTrack(stmts().getBySpotifyId.get(spotifyId));
+    
+    // Auto-invalidate IP-locked URLs
+    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
+        track.audioUrlExpiry = 0; // Mark as expired
+    }
+    
+    return track;
 }
 
 /**
