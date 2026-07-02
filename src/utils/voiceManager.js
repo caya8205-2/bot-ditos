@@ -20,6 +20,7 @@ const { generateMusicEmbed, getMusicButtons } = require('./uiHelpers');
 const youtubeResolver = require('./youtubeResolver');
 const musicCache = require('./musicCache');
 const { getPrefetched, consumePrefetch, schedulePrefetch } = require('./prefetchManager');
+const { recordCacheHit, recordCacheMiss } = require('./resolverMetrics');
 
 // ─── Song Resolution ──────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ async function getStreamUrl(song) {
     if (prefetchHit) {
         console.log(`[Music] Prefetch hit → instant start: ${title}`);
         consumePrefetch(videoId);
+        recordCacheHit();
         return prefetchHit.audioUrl;
     }
 
@@ -45,10 +47,12 @@ async function getStreamUrl(song) {
     const cached = musicCache.getCachedById(videoId);
     if (cached && musicCache.isUrlFresh(cached)) {
         console.log(`[Music] Cache hit: ${title}`);
+        recordCacheHit();
         return cached.audioUrl;
     }
 
     // 3. Resolve baru via youtubei.js
+    recordCacheMiss();
     console.log(`[Music] Resolving stream: ${title}`);
     const audio = await youtubeResolver.resolveAudioUrl(videoId);
 
@@ -205,6 +209,16 @@ async function playNext(guildId) {
 
     } catch (err) {
         console.error('[Music] playNext error:', err.message);
+        console.error('[Music] Full error stack:', err.stack);
+        
+        // Send user-facing error message
+        if (queue.textChannel) {
+            const errorMsg = err.message.includes('No client could resolve')
+                ? `⚠️ YouTube nge-block IP server. **${song.title}** gak bisa diputar. Skip...`
+                : `⚠️ Error pas mutar **${song.title}**: ${err.message}. Skip...`;
+            queue.textChannel.send(errorMsg).catch(() => {});
+        }
+        
         queue.songs.shift();
         setTimeout(() => playNext(guildId), 1000);
     }

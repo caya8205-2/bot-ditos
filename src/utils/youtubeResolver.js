@@ -1,9 +1,22 @@
 'use strict';
 
+const metrics = require('./resolverMetrics');
+
 // Primary YouTube resolver menggunakan youtubei.js (Innertube API).
 // Port dari Noctune backend/src/services/youtubei.ts, diadaptasi ke CommonJS.
 // - Primary resolver: Innertube (no subprocess, no scraping)
 // - Multi-client fallback: ANDROID → IOS → WEB → MWEB → TV_SIMPLY → ANDROID_VR
+// - Cookie support: Letakkan youtube-cookies.json di root untuk bypass datacenter IP block
+//
+// Cara export cookies:
+// 1. Install browser extension "Get cookies.txt LOCALLY" (Chrome/Firefox)
+// 2. Buka youtube.com (pastikan login)
+// 3. Export cookies → pilih format "JSON" atau "Netscape"
+// 4. Save sebagai youtube-cookies.json di project root
+// 5. Restart bot
+//
+// Note: Cookies valid ~1 tahun, tapi bisa expire lebih cepat kalau YouTube detect abuse.
+// Fallback yt-dlp masih aktif sebagai last resort (lambat, tapi lebih reliable dari nothing).
 
 const YOUTUBEI_CLIENTS = ['ANDROID', 'IOS', 'WEB', 'MWEB', 'TV_SIMPLY', 'ANDROID_VR'];
 const URL_EXPIRY_MS = (5 * 60 + 45) * 60 * 1000; // 5h45m — conservative YT URL expiry
@@ -15,7 +28,55 @@ async function getInnertube() {
     if (!innertubePromise) {
         innertubePromise = (async () => {
             const { Innertube } = await import('youtubei.js');
-            return Innertube.create();
+            const fs = require('fs');
+            const path = require('path');
+            
+            let cookies;
+            
+            // Try Base64 env var first (for Railway deployment)
+            if (process.env.YOUTUBE_COOKIES_B64) {
+                try {
+                    cookies = Buffer.from(process.env.YOUTUBE_COOKIES_B64, 'base64').toString('utf8');
+                    console.log('[youtubeResolver] Loaded cookies from YOUTUBE_COOKIES_B64 env var');
+                } catch (err) {
+                    console.warn('[youtubeResolver] Failed to decode YOUTUBE_COOKIES_B64:', err.message);
+                }
+            }
+            
+            // Fallback to file (for local development)
+            if (!cookies) {
+                const cookiePath = process.env.YOUTUBE_COOKIES_PATH || path.join(process.cwd(), 'youtube-cookies.json');
+                if (fs.existsSync(cookiePath)) {
+                    try {
+                        const cookieData = fs.readFileSync(cookiePath, 'utf8');
+                        cookies = cookieData;
+                        console.log(`[youtubeResolver] Loaded YouTube cookies from: ${cookiePath}`);
+                    } catch (err) {
+                        console.warn('[youtubeResolver] Failed to load cookies:', err.message);
+                    }
+                } else {
+                    console.log('[youtubeResolver] No cookies found - resolver may fail on datacenter IPs');
+                    console.log('[youtubeResolver] Tip: Export cookies and set YOUTUBE_COOKIES_B64 env var or save to youtube-cookies.json');
+                }
+            }
+            
+            const yt = await Innertube.create({
+                cookie: cookies,
+                // Use residential-like headers
+                fetch: async (input, init) => {
+                    const modifiedInit = {
+                        ...init,
+                        headers: {
+                            ...init?.headers,
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                        },
+                    };
+                    return fetch(input, modifiedInit);
+                },
+            });
+            
+            return yt;
         })();
     }
     return innertubePromise;
@@ -105,6 +166,7 @@ async function getBasicInfoWithFallback(videoId) {
 async function getStreamingDataWithFallback(videoId) {
     const youtube = await getInnertube();
     const failures = [];
+    const startTime = Date.now();
 
     // Try audio/mp4 first (most compatible), then any audio format
     const optionSets = [
@@ -125,14 +187,86 @@ async function getStreamingDataWithFallback(videoId) {
                 // Skip limited iOS streams (known to fail)
                 if (isLimitedIosStream(format.url)) throw new Error('Skipping limited iOS stream');
 
+                const elapsedMs = Date.now() - startTime;
+                metrics.recordResolveAttempt(videoId, client, true, elapsedMs, null);
+                
                 return { format: { ...format, url: format.url }, client };
             } catch (err) {
-                failures.push(`${client}/${options.format}: ${err.message}`);
+                const failMsg = `${client}/${options.format}: ${err.message}`;
+                failures.push(failMsg);
+                console.log(`[youtubeResolver:fallback] ${failMsg}`);
             }
         }
     }
 
-    throw new Error(`No client could resolve audio for ${videoId}. ${failures.join(' | ')}`);
+    const fullError = `No client could resolve audio for ${videoId}. ${failures.join(' | ')}`;
+    console.error(`[youtubeResolver:fallback] EXHAUSTED ALL CLIENTS: ${fullError}`);
+    
+    // Try yt-dlp as last resort fallback (if enabled)
+    const ytDlpEnabled = process.env.YOUTUBE_YTDLP_FALLBACK === 'true';
+    
+    if (ytDlpEnabled) {
+        console.log(`[youtubeResolver:fallback] Attempting yt-dlp fallback for ${videoId}...`);
+        try {
+            const result = await getStreamingDataViaYtDlp(videoId);
+            const elapsedMs = Date.now() - startTime;
+            metrics.recordResolveAttempt(videoId, 'yt-dlp', true, elapsedMs, null);
+            return result;
+        } catch (ytDlpErr) {
+            console.error(`[youtubeResolver:fallback] yt-dlp also failed: ${ytDlpErr.message}`);
+            const elapsedMs = Date.now() - startTime;
+            const combinedError = new Error(`${fullError} | yt-dlp: ${ytDlpErr.message}`);
+            metrics.recordResolveAttempt(videoId, 'yt-dlp', false, elapsedMs, combinedError);
+            throw combinedError;
+        }
+    } else {
+        console.log(`[youtubeResolver:fallback] yt-dlp fallback disabled (set YOUTUBE_YTDLP_FALLBACK=true to enable)`);
+        const elapsedMs = Date.now() - startTime;
+        const error = new Error(fullError);
+        metrics.recordResolveAttempt(videoId, 'all-clients', false, elapsedMs, error);
+        throw error;
+    }
+}
+
+async function getStreamingDataViaYtDlp(videoId) {
+    const { exec } = require('child_process');
+    const { promisify } = require('util');
+    const execAsync = promisify(exec);
+
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    // yt-dlp command to get direct audio URL (best audio, m4a/opus preferred)
+    const cmd = `yt-dlp -f "bestaudio[ext=m4a]/bestaudio" --get-url "${url}"`;
+    
+    try {
+        const { stdout, stderr } = await execAsync(cmd, { timeout: 10000 });
+        
+        if (stderr && !stdout) {
+            throw new Error(stderr.trim());
+        }
+        
+        const audioUrl = stdout.trim().split('\n')[0]; // Get first line (audio URL)
+        
+        if (!audioUrl || !audioUrl.startsWith('http')) {
+            throw new Error('Invalid URL returned from yt-dlp');
+        }
+        
+        console.log(`[youtubeResolver:yt-dlp] Successfully resolved ${videoId}`);
+        
+        return {
+            format: {
+                url: audioUrl,
+                mime_type: 'audio/mp4', // Assume m4a
+            },
+            client: 'yt-dlp',
+        };
+    } catch (err) {
+        // yt-dlp might not be installed or failed
+        if (err.message.includes('yt-dlp') && err.code === 'ENOENT') {
+            throw new Error('yt-dlp not installed on system');
+        }
+        throw err;
+    }
 }
 
 function isLimitedIosStream(url) {
@@ -211,14 +345,28 @@ async function getYoutubePlaylistTracks(url, limit = 100) {
  * @returns {Promise<{ videoId: string, url: string, expiry: number, format: string }>}
  */
 async function resolveAudioUrl(videoId) {
-    const { format } = await getStreamingDataWithFallback(videoId);
+    // Check throttle status
+    const throttle = metrics.shouldThrottle();
+    if (throttle.throttled) {
+        const waitSec = Math.round(throttle.waitMs / 1000);
+        throw new Error(`Resolver throttled due to repeated failures. Retry in ${waitSec}s`);
+    }
+    
+    try {
+        const { format, client } = await getStreamingDataWithFallback(videoId);
 
-    return {
-        videoId,
-        url: format.url,
-        expiry: Date.now() + URL_EXPIRY_MS,
-        format: parseAudioFormat(format.mime_type),
-    };
+        console.log(`[youtubeResolver:stream] ${videoId} resolved via client: ${client}`);
+
+        return {
+            videoId,
+            url: format.url,
+            expiry: Date.now() + URL_EXPIRY_MS,
+            format: parseAudioFormat(format.mime_type),
+        };
+    } catch (err) {
+        console.error(`[youtubeResolver:stream] FAILED for ${videoId}:`, err.message);
+        throw err;
+    }
 }
 
 /**
@@ -252,4 +400,6 @@ module.exports = {
     getYoutubePlaylistTracks,
     resolveAudioUrl,
     resolveTrack,
+    getMetrics: () => metrics.getMetrics(),
+    resetMetrics: () => metrics.resetMetrics(),
 };

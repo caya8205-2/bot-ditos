@@ -12,3 +12,10 @@ data/
 # Legacy / User Data
 legacy/
 src/data/songCache.json
+
+# YouTube cookies (sensitive)
+youtube-cookies.json
+youtube-cookies.txt
+youtube-cookies-b64.txt
+cookies.json
+cookies.txt
