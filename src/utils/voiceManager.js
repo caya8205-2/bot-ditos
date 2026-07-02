@@ -153,6 +153,14 @@ async function playNext(guildId) {
         console.log(`[Music] Starting playback: ${song.title} (${song.videoId})`);
         console.log(`[Music] Stream URL: ${streamUrl.substring(0, 80)}...`);
 
+        // Quick URL validity check
+        try {
+            const urlObj = new URL(streamUrl);
+            console.log(`[Music] URL host: ${urlObj.hostname}`);
+        } catch (urlErr) {
+            throw new Error(`Invalid stream URL: ${urlErr.message}`);
+        }
+
         // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
         // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
         const child = spawn(ffmpegPath, [
@@ -190,6 +198,8 @@ async function playNext(guildId) {
                 if (ffmpegErrorOutput) {
                     console.error(`[FFmpeg] Error output:\n${ffmpegErrorOutput}`);
                 }
+            } else {
+                console.log(`[FFmpeg] Exited normally (code: ${code})`);
             }
         });
 
