@@ -46,6 +46,14 @@ function createQueue(guildId, voiceChannel, textChannel) {
         if (newState.status === 'disconnected') {
             console.warn(`[Music] Voice disconnected! Reason:`, newState.reason);
         }
+        if (newState.status === 'ready') {
+            // Log UDP connection info
+            try {
+                console.log(`[Music] Voice ready - Ping: ${connection.ping.ws}ms`);
+            } catch (e) {
+                console.log(`[Music] Voice ready (ping unavailable)`);
+            }
+        }
     });
 
     const queue = {
