@@ -49,7 +49,15 @@ async function getInnertube() {
                 if (fs.existsSync(cookiePath)) {
                     try {
                         const cookieData = fs.readFileSync(cookiePath, 'utf8');
-                        cookies = cookieData;
+                        
+                        // Detect format: Netscape vs JSON
+                        if (cookieData.trim().startsWith('# Netscape HTTP Cookie File')) {
+                            console.log('[youtubeResolver] Detected Netscape cookie format, converting...');
+                            cookies = parseNetscapeCookies(cookieData);
+                        } else {
+                            cookies = cookieData;
+                        }
+                        
                         console.log(`[youtubeResolver] Loaded YouTube cookies from: ${cookiePath}`);
                     } catch (err) {
                         console.warn('[youtubeResolver] Failed to load cookies:', err.message);
@@ -80,6 +88,33 @@ async function getInnertube() {
         })();
     }
     return innertubePromise;
+}
+
+// Parse Netscape cookie format to JSON array
+function parseNetscapeCookies(netscapeStr) {
+    const lines = netscapeStr.split('\n');
+    const cookies = [];
+    
+    for (const line of lines) {
+        // Skip comments and empty lines
+        if (line.trim().startsWith('#') || !line.trim()) continue;
+        
+        const parts = line.split('\t');
+        if (parts.length < 7) continue;
+        
+        const [domain, flag, path, secure, expiration, name, value] = parts;
+        
+        cookies.push({
+            domain: domain.trim(),
+            path: path.trim(),
+            secure: secure.trim() === 'TRUE',
+            expires: parseInt(expiration.trim()),
+            name: name.trim(),
+            value: value.trim(),
+        });
+    }
+    
+    return JSON.stringify(cookies);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
