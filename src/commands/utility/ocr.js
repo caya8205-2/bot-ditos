@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { analyzeImageWithGemini } = require('../../utils/geminiManager');
+const { analyzeImage } = require('../../utils/visionManager');
 const { OWNER_ID } = require('../../config');
 
 module.exports = {
@@ -53,7 +53,7 @@ module.exports = {
                 'If there is no text in the image, respond with "[No text found]". ' +
                 'Do not add any commentary or explanation, just the text itself.';
 
-            const extractedText = await analyzeImageWithGemini(attachment.url, prompt);
+            const extractedText = await analyzeImage(attachment.url, prompt);
 
             if (!extractedText || extractedText.trim() === '') {
                 return message.reply('❌ Gak nemu text di gambar ini. Mungkin gambarnya blur atau emang gak ada text.');

@@ -1,4 +1,4 @@
-# Bot Ditos
+﻿# Bot Ditos
 
 [![Discord.js](https://img.shields.io/badge/Discord.js-v14-5865F2)](https://discord.js.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-24-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
@@ -106,7 +106,7 @@ DISCORD_TOKEN=token_discord_kamu
 # LLM — Local (primary)
 # Opsional, bisa ganti urutan fallback nya di `src/utils/llmManager.js`
 LOCAL_LLM_BASE_URL=http://127.0.0.1:5001/v1
-LOCAL_LLM_MODEL=Qwen2-VL-2B-Instruct-Q8_0.gguf
+LOCAL_LLM_MODEL=gemma-3-4b-it-Q4_K_M.gguf
 LOCAL_LLM_TIMEOUT_MS=120000
 LOCAL_LLM_FALLBACK_COOLDOWN_MS=300000
 LOCAL_LLM_INPUT_TOKEN_BUDGET=6000

@@ -2,6 +2,8 @@ require('dotenv').config();
 
 const {
     LOCAL_LLM_MODEL,
+    LOCAL_LLM_BASE_URL,
+    LOCAL_LLM_TIMEOUT_MS,
     getLocalLLMClient,
 } = require('./localLLMManager');
 const {
@@ -105,20 +107,38 @@ async function callNinerFallback(requestFn, options = {}) {
 }
 
 async function callLLMWithFallback(requestFn, options = {}) {
-    return callNinerFallback(requestFn, options);
+    if (Date.now() < localUnavailableUntil) {
+            return callNinerFallback(requestFn, options);
+        }
+
+        try {
+            const result = await requestFn(
+                createModelBoundClient(options.localClient || getLocalLLMClient(), LOCAL_LLM_MODEL),
+                { provider: 'local', model: LOCAL_LLM_MODEL }
+            );
+            lastLocalError = null;
+            return result;
+        } catch (localError) {
+            markLocalUnavailable(localError);
+
+        try {
+            return await callNinerFallback(requestFn, options);
+        } catch (fallbackError) {
+            throw new AggregateError(
+                [localError, fallbackError],
+                `Model lokal, 9router, dan Groq sama-sama gagal. Local: ${localError.message}. Fallback: ${fallbackError.message}`
+            );
+        }
+    }
 }
 
 function getLLMProviderStatus() {
     return {
         primary: {
-            provider: 'niner',
-            baseURL: NINER_BASE_URL,
-            model: NINER_MODEL,
-            timeoutMs: NINER_TIMEOUT_MS,
-            available: isNinerAvailable(),
-            unavailableUntil: ninerUnavailableUntil,
-            onCooldown: Date.now() < ninerUnavailableUntil,
-            lastError: lastNinerError?.message || null,
+            provider: 'local',
+            baseURL: LOCAL_LLM_BASE_URL,
+            model: LOCAL_LLM_MODEL,
+            timeoutMs: LOCAL_LLM_TIMEOUT_MS,
         },
         secondary: {
             provider: 'niner',

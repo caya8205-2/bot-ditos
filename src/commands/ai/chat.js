@@ -3,7 +3,7 @@ const state = require('../../data/state'); // Access memoryData via getter/prope
 const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTORY } = require('../../data/constants');
 const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
 const { preparePromptMessages } = require('../../utils/promptBuilder');
-const { analyzeImageWithGemini } = require('../../utils/geminiManager');
+const { analyzeImage } = require('../../utils/visionManager');
 const { resolveMemberFuzzy } = require('../../utils/helpers');
 const { OWNER_ID } = require('../../config');
 
@@ -37,7 +37,7 @@ module.exports = {
             if (message.attachments.size > 0) {
                 const attachment = message.attachments.first();
                 if (attachment.contentType?.startsWith('image/')) {
-                    imageDescription = await analyzeImageWithGemini(attachment.url);
+                    imageDescription = await analyzeImage(attachment.url);
                 }
             }
 

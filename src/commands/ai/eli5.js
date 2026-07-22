@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
-const { analyzeImageWithGemini } = require('../../utils/geminiManager');
+const { analyzeImage } = require('../../utils/visionManager');
 const { replyEmbedAndSave, saveToChannelHistory, createStatusEmbed } = require('../../utils/helpers');
 const { channelHistory, MAX_CHANNEL_HISTORY } = require('../../data/state');
 const { OWNER_ID } = require('../../config');
@@ -64,7 +64,7 @@ module.exports = {
                 const attachment = message.attachments.first();
                 if (attachment.contentType?.startsWith('image/')) {
                     await message.channel.send('🔍 Bentar, lagi analisa gambarnya...');
-                    imageDescription = await analyzeImageWithGemini(attachment.url);
+                    imageDescription = await analyzeImage(attachment.url);
                     console.log('[ELI5] Image analyzed:', imageDescription?.substring(0, 100));
                 }
             }
