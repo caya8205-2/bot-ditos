@@ -157,4 +157,4 @@ Dibiarkan di sini bukan karena masih dipakai, tapi karena jadi bukti perjalanan 
 
 ## Lisensi
 
-[MIT](LICENSE) — bebas dipelajari, dimodif, atau dijadiin base project sendiri. Kalau mau nulis credit, boleh. Kalau enggak, juga gapapa.
+[MIT](LICENSE) — bebas dipelajari, dimodif, atau dijadiin base project sendiri. Kalau mau nulis credit, boleh. Kalau enggak, juga gapapa. 
