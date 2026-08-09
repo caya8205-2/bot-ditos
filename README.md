@@ -71,7 +71,8 @@ bot-ditos/
 ├── data/               # Runtime data (bot.db, *.migrated) — gitignored
 ├── legacy/             # File asli sebelum refactor (lihat bagian Legacy)
 ├── sounds/             # Audio clips untuk soundboard
-└── start-bot.js        # Entry point dengan auto-restart
+├── ecosystem.config.js # Konfigurasi PM2 process manager
+└── start-bot.js        # Entry point fallback dengan auto-restart
 ```
 
 ---
@@ -137,11 +138,20 @@ CIVITAI_API_KEY=      # Opsional, gak di maintain code nya
 ### 3. Jalankan
 
 ```bash
-npm start       # Production (dengan auto-restart via start-bot.js)
-npm run dev     # Development (nodemon)
+npm run pm2:start   # Recommended: Production Daemon (PM2 background process)
+npm start           # Fallback biasa (auto-restart via start-bot.js)
+npm run dev         # Development (nodemon)
 ```
 
-Bot self-hosted di PC sendiri. Disarankan pakai **pm2** atau biarkan `start-bot.js` handle auto-restart — sudah built-in.
+**Kelola PM2:**
+```bash
+npm run pm2:status   # Cek status bot
+npm run pm2:logs     # Lihat log real-time
+npm run pm2:restart  # Restart bot
+npm run pm2:stop     # Stop bot
+```
+
+Bot disarankan dijalankan via **PM2** ([`ecosystem.config.js`](file:///c:/Users/Caya/Desktop/Project/bot-ditos/ecosystem.config.js)) untuk self-hosting 24/7 di background.
 
 > **Database**: Saat pertama kali start setelah upgrade ke v2.1.0, bot otomatis migrasi data lama dari JSON ke SQLite (`data/bot.db`). File JSON lama di-rename jadi `.migrated` sebagai backup.
 

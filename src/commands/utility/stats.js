@@ -1,4 +1,6 @@
 const os = require('os');
+const { EmbedBuilder } = require('discord.js');
+const { replyEmbedAndSave } = require('../../utils/helpers');
 
 module.exports = {
     name: 'stats',
@@ -24,15 +26,20 @@ module.exports = {
 
         const formatBytes = (bytes) => {
             const gb = bytes / 1024 / 1024 / 1024;
-            return gb.toFixed(2) + 'GB';
+            return gb.toFixed(2) + ' GB';
         };
 
-        return message.reply(
-            `**System Status**\n` +
-            `> **CPU Load:** ${cpuPercent}%\n` +
-            `> **RAM Usage:** ${formatBytes(usedMem)} / ${formatBytes(totalMem)}\n` +
-            `> **Bot Uptime:** ${botHours}j ${botMinutes}m ${botSeconds}d\n` +
-            `> **PC Uptime:** ${pcHours}j ${pcMinutes}m ${pcSeconds}d`
-        );
+        const embed = new EmbedBuilder()
+            .setTitle('🖥️ System & Bot Status')
+            .setColor('#2196F3')
+            .addFields(
+                { name: '⚡ CPU Load', value: `\`${cpuPercent}%\` (${cpuCount} Cores)`, inline: true },
+                { name: '📊 RAM Usage', value: `\`${formatBytes(usedMem)} / ${formatBytes(totalMem)}\``, inline: true },
+                { name: '🤖 Bot Uptime', value: `\`${botHours}j ${botMinutes}m ${botSeconds}d\``, inline: true },
+                { name: '💻 PC Uptime', value: `\`${pcHours}j ${pcMinutes}m ${pcSeconds}d\``, inline: true }
+            )
+            .setTimestamp();
+
+        return replyEmbedAndSave(message, { embeds: [embed] });
     },
 };

@@ -1,5 +1,6 @@
+const { EmbedBuilder } = require('discord.js');
 const state = require('../../data/state');
-const { getLevelFromXP } = require('../../utils/helpers');
+const { getLevelFromXP, replyEmbedAndSave } = require('../../utils/helpers');
 
 module.exports = {
     name: 'quizleaderboard',
@@ -9,20 +10,32 @@ module.exports = {
         const entries = Object.values(state.triviaScore);
 
         if (entries.length === 0) {
-            return message.reply('Belum ada yang main trivia.');
+            const emptyEmbed = new EmbedBuilder()
+                .setTitle('🏆 Trivia Leaderboard')
+                .setColor('#FFC107')
+                .setDescription('Belum ada yang main trivia. Jawab trivia pertama pakai `d!trivia`!')
+                .setTimestamp();
+            return replyEmbedAndSave(message, { embeds: [emptyEmbed] });
         }
 
         const sorted = entries.sort((a, b) => b.xp - a.xp).slice(0, 10);
 
+        const medals = ['🥇', '🥈', '🥉'];
         const text = sorted
             .map((u, i) => {
                 const level = getLevelFromXP(u.xp);
-                return `${i + 1}. **${u.username}** – XP: ${u.xp} | Level: ${level} | Benar: ${u.correct}`;
+                const rank = medals[i] || `**#${i + 1}**`;
+                return `${rank} **${u.username}** — **${u.xp}** XP *(Lvl ${level})* | **${u.correct}** Benar`;
             })
             .join('\n');
 
-        return message.reply(
-            `🏆 **TRIVIA LEADERBOARD (Top 10)**\n\n${text}`
-        );
+        const embed = new EmbedBuilder()
+            .setTitle('🏆 Trivia Leaderboard (Top 10)')
+            .setColor('#FFD700')
+            .setDescription(text)
+            .setFooter({ text: 'Mainkan d!trivia untuk menaikkan skor!' })
+            .setTimestamp();
+
+        return replyEmbedAndSave(message, { embeds: [embed] });
     },
 };

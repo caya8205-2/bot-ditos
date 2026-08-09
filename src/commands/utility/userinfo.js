@@ -1,4 +1,5 @@
-const { replyAndSave } = require('../../utils/helpers');
+const { EmbedBuilder } = require('discord.js');
+const { replyEmbedAndSave } = require('../../utils/helpers');
 
 module.exports = {
     name: 'userinfo',
@@ -23,26 +24,27 @@ module.exports = {
             const statusEmoji = { online: '🟢 Online', idle: '🟡 Idle', dnd: '🔴 Do Not Disturb', offline: '⚫ Offline' };
             const status = statusEmoji[member.presence?.status] || '⚫ Offline';
 
-            const infoText = `
-      **👤 User Info: ${targetUser.tag}**
-      **🆔 User ID:** ${targetUser.id}
-      **📛 Server Nickname:** ${member.displayName}
-      **📊 Status:** ${status}
-      **📅 Akun Dibuat:** ${formatDate(createdAt)} (${daysSinceCreation} hari lalu)
-      **📥 Join Server:** ${formatDate(joinedAt)} (${daysSinceJoin} hari lalu)
-      **🎭 Roles (${member.roles.cache.size - 1}):** ${roles}
-          `.trim();
+            const avatarURL = targetUser.displayAvatarURL({ size: 512, dynamic: true });
 
-            await replyAndSave(message, infoText);
+            const embed = new EmbedBuilder()
+                .setTitle(`👤 User Info: ${targetUser.tag}`)
+                .setColor('#9B59B6')
+                .setThumbnail(avatarURL)
+                .addFields(
+                    { name: '🆔 User ID', value: `\`${targetUser.id}\``, inline: true },
+                    { name: '📛 Nickname', value: member.displayName, inline: true },
+                    { name: '📊 Status', value: status, inline: true },
+                    { name: '📅 Akun Dibuat', value: `${formatDate(createdAt)}\n*(${daysSinceCreation} hari lalu)*`, inline: true },
+                    { name: '📥 Join Server', value: `${formatDate(joinedAt)}\n*(${daysSinceJoin} hari lalu)*`, inline: true },
+                    { name: `🎭 Roles (${member.roles.cache.size - 1})`, value: roles.length > 500 ? roles.substring(0, 500) + '...' : roles, inline: false }
+                )
+                .setTimestamp();
 
-            try {
-                const avatarURL = targetUser.displayAvatarURL({ size: 256, dynamic: true });
-                await message.channel.send({ embeds: [{ title: `Avatar ${targetUser.tag}`, image: { url: avatarURL } }] });
-            } catch { }
+            return replyEmbedAndSave(message, { embeds: [embed] });
 
         } catch (err) {
             console.error('Userinfo error:', err);
             return message.reply('Error pas ngambil info user nih');
         }
     }
-}
+};

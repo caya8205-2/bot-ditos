@@ -1,4 +1,5 @@
-const { replyAndSave } = require('../../utils/helpers');
+const { EmbedBuilder } = require('discord.js');
+const { replyEmbedAndSave } = require('../../utils/helpers');
 
 module.exports = {
     name: 'serverinfo',
@@ -15,27 +16,28 @@ module.exports = {
             const textChannels = guild.channels.cache.filter(c => c.type === 0).size;
             const voiceChannels = guild.channels.cache.filter(c => c.type === 2).size;
 
-            const serverInfo = `
-      **🏠 Server Info: ${guild.name}**
-      **🆔 Server ID:** ${guild.id}
-      **👑 Owner:** <@${guild.ownerId}>
-      **📅 Dibuat:** ${formatDate(guild.createdAt)} (${daysSinceCreation} hari lalu)
-      **👥 Members:** ${guild.memberCount} total (👤 ${humans} | 🤖 ${bots})
-      **💬 Channels:** ${guild.channels.cache.size} total (📝 ${textChannels} | 🔊 ${voiceChannels})
-      **🎭 Roles:** ${guild.roles.cache.size - 1}
-      **✨ Boost:** Level ${guild.premiumTier} (${guild.premiumSubscriptionCount || 0} boosts)
-          `.trim();
+            const embed = new EmbedBuilder()
+                .setTitle(`🏠 Server Info: ${guild.name}`)
+                .setColor('#5865F2')
+                .addFields(
+                    { name: '🆔 Server ID', value: `\`${guild.id}\``, inline: true },
+                    { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true },
+                    { name: '📅 Dibuat', value: `${formatDate(guild.createdAt)}\n*(${daysSinceCreation} hari lalu)*`, inline: true },
+                    { name: `👥 Members (${guild.memberCount})`, value: `👤 Human: ${humans}\n🤖 Bot: ${bots}`, inline: true },
+                    { name: `💬 Channels (${guild.channels.cache.size})`, value: `📝 Text: ${textChannels}\n🔊 Voice: ${voiceChannels}`, inline: true },
+                    { name: '✨ Boost Level', value: `Level ${guild.premiumTier} (${guild.premiumSubscriptionCount || 0} boosts)`, inline: true }
+                )
+                .setFooter({ text: `Total Roles: ${guild.roles.cache.size - 1}` })
+                .setTimestamp();
 
             if (guild.iconURL()) {
-                await message.reply({
-                    content: serverInfo,
-                    files: [guild.iconURL({ dynamic: true, size: 512 })]
-                });
-            } else {
-                await replyAndSave(message, serverInfo);
+                embed.setThumbnail(guild.iconURL({ dynamic: true, size: 512 }));
             }
+
+            return replyEmbedAndSave(message, { embeds: [embed] });
         } catch (err) {
-            console.error(err);
+            console.error('Serverinfo error:', err);
+            return message.reply('Gagal mengambil info server.');
         }
     }
-}
+};

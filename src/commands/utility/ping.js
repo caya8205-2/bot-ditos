@@ -4,9 +4,10 @@ module.exports = {
     name: 'ping',
     description: 'Cek latency bot',
     async execute(message, args, client) {
-        const msg = await message.reply('Testing ping...');
+        const msg = await message.reply('🏓 Testing ping...');
         const messagePing = msg.createdTimestamp - message.createdTimestamp;
         const botGatewayPing = client.ws.ping;
+
         const bar = (ms) => {
             if (ms === null || typeof ms !== 'number') return '──────────';
             const max = 300;
@@ -16,7 +17,6 @@ module.exports = {
             return '▇'.repeat(filled) + '▁'.repeat(empty);
         };
 
-        // Warna
         const color = (ms) => {
             if (ms === null || typeof ms !== 'number') return '⚪ N/A';
             if (ms <= 60) return `🟢 ${ms}ms`;
@@ -24,20 +24,24 @@ module.exports = {
             return `🔴 ${ms}ms`;
         };
 
-        msg.edit(
-            `**Ping Test untuk ${message.author.tag}**\n\n` +
+        const embed = new EmbedBuilder()
+            .setTitle(`🏓 Ping Test untuk ${message.author.username}`)
+            .setColor(botGatewayPing <= 100 ? '#4CAF50' : '#FF9800')
+            .addFields(
+                {
+                    name: '⏱️ Round-trip Latency',
+                    value: `${color(messagePing)}\n\`${bar(messagePing)}\`\n*Latency command sampai bot reply*`,
+                    inline: false
+                },
+                {
+                    name: '🌐 Bot Connection (Gateway)',
+                    value: `${color(botGatewayPing)}\n\`${bar(botGatewayPing)}\`\n*Ping bot ke Discord server*`,
+                    inline: false
+                }
+            )
+            .setFooter({ text: 'Estimasi latency real-time' })
+            .setTimestamp();
 
-            `**Round-trip Latency:** ${color(messagePing)}\n` +
-            `${bar(messagePing)}\n` +
-            `└─ Waktu dari kamu kirim command sampai bot reply\n` +
-            `   (Ini termasuk ping kamu + ping bot)\n\n` +
-
-            `**Bot Connection:** ${color(botGatewayPing)}\n` +
-            `${bar(botGatewayPing)}\n` +
-            `└─ Ping bot ke Discord server\n\n` +
-
-            `⚠️ **Note:** Bot gak bisa ngecek ping kamu langsung.\n` +
-            `Round-trip latency di atas adalah estimasi terbaik.`
-        );
+        return msg.edit({ content: null, embeds: [embed] });
     },
 };

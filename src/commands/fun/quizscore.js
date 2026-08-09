@@ -1,5 +1,6 @@
-const state = require('../../data/state'); // Access state objects dynamically to avoid stale references
-const { getLevelFromXP } = require('../../utils/helpers');
+const { EmbedBuilder } = require('discord.js');
+const state = require('../../data/state');
+const { getLevelFromXP, replyEmbedAndSave } = require('../../utils/helpers');
 
 module.exports = {
     name: 'quizscore',
@@ -14,12 +15,20 @@ module.exports = {
         }
 
         const level = getLevelFromXP(data.xp);
+        const avatarURL = user.displayAvatarURL({ size: 256, dynamic: true });
 
-        return message.reply(
-            `📊 **Trivia Score – ${user.username}**\n` +
-            `XP: ${data.xp}\n` +
-            `Level: ${level}\n` +
-            `Jawaban benar: ${data.correct}`
-        );
+        const embed = new EmbedBuilder()
+            .setTitle(`📊 Trivia Score: ${user.username}`)
+            .setColor('#4CAF50')
+            .setThumbnail(avatarURL)
+            .addFields(
+                { name: '✨ Total XP', value: `\`${data.xp}\` XP`, inline: true },
+                { name: '⭐ Level', value: `Level \`${level}\``, inline: true },
+                { name: '✅ Jawaban Benar', value: `\`${data.correct}\` Soal`, inline: true }
+            )
+            .setFooter({ text: 'Jawab trivia untuk menambah XP & Level!' })
+            .setTimestamp();
+
+        return replyEmbedAndSave(message, { embeds: [embed] });
     },
 };
