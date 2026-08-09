@@ -36,6 +36,7 @@ function createQueue(guildId, voiceChannel, textChannel) {
         connection,
         player,
         songs: [],
+        previousHistory: [],
         volume: 1,
     };
 
@@ -43,12 +44,28 @@ function createQueue(guildId, voiceChannel, textChannel) {
 
     // Listener dipasang SEKALI per sesi
     player.on(AudioPlayerStatus.Idle, () => {
+        if (queue.isSeeking) {
+            queue.isSeeking = false;
+            return;
+        }
+        if (queue.isPreviousAction) {
+            queue.isPreviousAction = false;
+            return playNext(guildId);
+        }
+        if (queue.nowPlaying) {
+            if (!queue.previousHistory) queue.previousHistory = [];
+            queue.previousHistory.push(queue.nowPlaying);
+        }
         queue.songs.shift();
         playNext(guildId);
     });
 
     player.on('error', (err) => {
         console.error('[Music] Player error:', err);
+        if (queue.nowPlaying) {
+            if (!queue.previousHistory) queue.previousHistory = [];
+            queue.previousHistory.push(queue.nowPlaying);
+        }
         queue.songs.shift();
         playNext(guildId);
     });

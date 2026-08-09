@@ -1,5 +1,6 @@
 const { musicQueues } = require('../data/state');
 const { generateMusicEmbed, getMusicButtons } = require('../utils/uiHelpers');
+const { playPrevious, seekAudio, getElapsedSeconds } = require('../utils/voiceManager');
 const { AudioPlayerStatus } = require('@discordjs/voice');
 const { ButtonStyle } = require('discord.js');
 
@@ -16,6 +17,38 @@ module.exports = {
         const guildId = interaction.guild.id;
         const data = musicQueues.get(guildId);
         if (!data) return;
+
+        if (id === "music_prev") {
+            const success = await playPrevious(guildId);
+            if (!success) {
+                return interaction.reply({ content: 'Belum ada riwayat lagu sebelumnya.', ephemeral: true });
+            }
+            await interaction.reply(`⏮ Kembali ke lagu sebelumnya...`);
+            return;
+        }
+
+        if (id.startsWith("music_seek_")) {
+            await interaction.deferUpdate().catch(() => {});
+
+            const elapsed = getElapsedSeconds(guildId);
+            let offset = 0;
+            if (id === "music_seek_minus_10") offset = -10;
+            if (id === "music_seek_minus_5") offset = -5;
+            if (id === "music_seek_plus_5") offset = 5;
+            if (id === "music_seek_plus_10") offset = 10;
+
+            const target = Math.max(0, elapsed + offset);
+            await seekAudio(guildId, target);
+
+            const embed = generateMusicEmbed(guildId);
+            if (embed) {
+                await interaction.editReply({
+                    embeds: [embed],
+                    components: getMusicButtons(guildId)
+                }).catch(() => {});
+            }
+            return;
+        }
 
         if (id === "music_pause") {
             data.player.pause();

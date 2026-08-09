@@ -92,20 +92,28 @@ function generateMusicEmbed(guildId) { // Embed music player premium
 function getMusicButtons(guildId) { // Tombol
     const data = musicQueues.get(guildId);
     const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("music_seek_minus_10").setLabel("⏪ -10s").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music_seek_minus_5").setLabel("◀ -5s").setStyle(ButtonStyle.Secondary),
         data?.player?.state?.status === AudioPlayerStatus.Paused
             ? new ButtonBuilder().setCustomId("music_resume").setLabel("▶ Resume").setStyle(ButtonStyle.Success)
             : new ButtonBuilder().setCustomId("music_pause").setLabel("⏸ Pause").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("music_skip").setLabel("⏭ Skip").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("music_stop").setLabel("⏹ Stop").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("music_leave").setLabel("⏏ Leave").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music_seek_plus_5").setLabel("▶ +5s").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music_seek_plus_10").setLabel("⏩ +10s").setStyle(ButtonStyle.Secondary),
     );
 
     const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("music_prev").setLabel("⏮ Prev").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("music_skip").setLabel("⏭ Skip").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("music_vol_down").setLabel("🔉 -10%").setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("music_vol_up").setLabel("🔊 +10%").setStyle(ButtonStyle.Secondary),
     );
 
-    return [row1, row2];
+    const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("music_stop").setLabel("⏹ Stop").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("music_leave").setLabel("⏏ Leave").setStyle(ButtonStyle.Secondary),
+    );
+
+    return [row1, row2, row3];
 }
 
 module.exports = { generateMusicEmbed, getMusicButtons };

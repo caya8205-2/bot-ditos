@@ -21,6 +21,9 @@ const youtubeResolver = require('./youtubeResolver');
 const musicCache = require('./musicCache');
 const { getPrefetched, consumePrefetch, schedulePrefetch } = require('./prefetchManager');
 
+const { PassThrough } = require('stream');
+const { getAudioFilePath, hasAudioCache, pruneCacheIfNeeded } = require('./audioFileCache');
+
 // ─── Song Resolution ──────────────────────────────────────────────────────────
 
 /**
@@ -140,26 +143,38 @@ async function playNext(guildId) {
     queue.nowPlaying = song;
 
     try {
-        // Dapatkan stream URL (prefetch → cache → resolve)
-        const streamUrl = await getStreamUrl(song);
+        const isLocalCache = song.videoId && hasAudioCache(song.videoId);
+        let ffmpegArgs = [];
 
+        if (isLocalCache) {
+            console.log(`[Music] Local Audio Cache HIT: ${song.title}`);
+            ffmpegArgs = [
+                '-i', getAudioFilePath(song.videoId),
+                '-loglevel', 'warning',
+                '-c:a', 'copy',
+                '-f', 'ogg',
+                'pipe:1',
+            ];
+        } else {
+            const streamUrl = await getStreamUrl(song);
+            song.streamUrl = streamUrl;
+            ffmpegArgs = [
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-headers',
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
+                '-i', streamUrl,
+                '-loglevel', 'warning',
+                '-c:a', 'libopus',
+                '-f', 'ogg',
+                '-ar', '48000',
+                '-ac', '2',
+                'pipe:1',
+            ];
+        }
 
-        // Beri URL langsung ke FFmpeg — lebih reliable dari fetch+pipe.
-        // FFmpeg handle HTTP reconnection dan range delivery dari YouTube secara native.
-        const child = spawn(ffmpegPath, [
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-headers',
-            'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
-            '-i', streamUrl,
-            '-loglevel', 'warning',
-            '-c:a', 'libopus',
-            '-f', 'ogg',
-            '-ar', '48000',
-            '-ac', '2',
-            'pipe:1',
-        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
 
         child.on('error', (err) => {
             console.error('[Music] FFmpeg process error:', err.message);
@@ -170,14 +185,32 @@ async function playNext(guildId) {
             if (msg) console.warn(`[FFmpeg] ${msg}`);
         });
 
+        // Simpan ke local disk cache jika belum ada
+        if (!isLocalCache && song.videoId) {
+            const cachePath = getAudioFilePath(song.videoId);
+            const writeStream = fs.createWriteStream(cachePath);
+            child.stdout.pipe(writeStream);
+            writeStream.on('finish', () => {
+                console.log(`[Music] Saved local audio cache: ${song.title}`);
+                pruneCacheIfNeeded();
+            });
+            writeStream.on('error', (err) => {
+                console.warn('[Music] Write local audio cache error:', err.message);
+                try { fs.unlinkSync(cachePath); } catch {}
+            });
+        }
 
-        const resource = createAudioResource(child.stdout, {
+        const passThrough = new PassThrough();
+        child.stdout.pipe(passThrough);
+
+        const resource = createAudioResource(passThrough, {
             inputType: StreamType.OggOpus,
             inlineVolume: true,
         });
 
         queue.player.play(resource);
         resource.volume.setVolume(queue.volume || 1);
+        queue.playbackStartTime = Date.now();
 
         // Catat play count
         musicCache.recordPlay(song.videoId);
@@ -207,6 +240,93 @@ async function playNext(guildId) {
         queue.songs.shift();
         setTimeout(() => playNext(guildId), 1000);
     }
+}
+
+// ─── Seek & Previous Controls ──────────────────────────────────────────────────
+
+async function seekAudio(guildId, targetSeconds) {
+    const queue = musicQueues.get(guildId);
+    if (!queue || !queue.nowPlaying) return false;
+
+    try {
+        const song = queue.nowPlaying;
+        const safeSeek = Math.max(0, Math.floor(targetSeconds));
+        const isLocalCache = song.videoId && hasAudioCache(song.videoId);
+        let ffmpegArgs = [];
+
+        if (isLocalCache) {
+            ffmpegArgs = [
+                '-ss', String(safeSeek),
+                '-i', getAudioFilePath(song.videoId),
+                '-loglevel', 'warning',
+                '-c:a', 'copy',
+                '-f', 'ogg',
+                'pipe:1',
+            ];
+        } else {
+            const streamUrl = song.streamUrl || await getStreamUrl(song);
+            ffmpegArgs = [
+                '-ss', String(safeSeek),
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-headers',
+                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
+                '-i', streamUrl,
+                '-loglevel', 'warning',
+                '-c:a', 'libopus',
+                '-f', 'ogg',
+                '-ar', '48000',
+                '-ac', '2',
+                'pipe:1',
+            ];
+        }
+
+        const child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        child.on('error', (err) => {
+            console.error('[Music] FFmpeg seek error:', err.message);
+        });
+
+        const passThrough = new PassThrough();
+        child.stdout.pipe(passThrough);
+
+        const resource = createAudioResource(passThrough, {
+            inputType: StreamType.OggOpus,
+            inlineVolume: true,
+        });
+
+        queue.isSeeking = true;
+        queue.player.play(resource);
+        resource.volume.setVolume(queue.volume || 1);
+        queue.playbackStartTime = Date.now() - (safeSeek * 1000);
+        return true;
+    } catch (err) {
+        console.error('[Music] seekAudio error:', err);
+        return false;
+    }
+}
+
+function getElapsedSeconds(guildId) {
+    const queue = musicQueues.get(guildId);
+    if (!queue || !queue.playbackStartTime) return 0;
+    return Math.max(0, (Date.now() - queue.playbackStartTime) / 1000);
+}
+
+async function playPrevious(guildId) {
+    const queue = musicQueues.get(guildId);
+    if (!queue || !queue.previousHistory || queue.previousHistory.length === 0) {
+        return false;
+    }
+
+    const prevSong = queue.previousHistory.pop();
+    if (queue.nowPlaying) {
+        queue.songs.unshift(queue.nowPlaying);
+    }
+    queue.songs.unshift(prevSong);
+    queue.isPreviousAction = true;
+    queue.player.stop();
+    return true;
 }
 
 // ─── Soundboard ───────────────────────────────────────────────────────────────
@@ -256,4 +376,4 @@ async function ttsGoogle(text, outputFileName) {
     });
 }
 
-module.exports = { playNext, playLocalSound, ttsGoogle, resolveSong };
+module.exports = { playNext, playLocalSound, ttsGoogle, resolveSong, seekAudio, getElapsedSeconds, playPrevious };
