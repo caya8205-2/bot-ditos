@@ -1,8 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
-const { callLLMWithFallback, LLM_MODEL } = require('../../utils/llmManager');
-const { analyzeImageWithGemini } = require('../../utils/geminiManager');
-const { replyEmbedAndSave, saveToChannelHistory, createStatusEmbed } = require('../../utils/helpers');
-const { channelHistory, MAX_CHANNEL_HISTORY } = require('../../data/state');
+const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('../../utils/llmManager');
+const { fetchAndProcessImage, analyzeImageWithGemini } = require('../../utils/geminiManager');
+const { replyEmbedAndSave, saveToChannelHistory } = require('../../utils/helpers');
 const { OWNER_ID } = require('../../config');
 
 module.exports = {
@@ -12,7 +11,7 @@ module.exports = {
     async execute(message, args, client) {
         const topic = args.join(' ').trim();
 
-        if (!topic) {
+        if (!topic && message.attachments.size === 0) {
             const usageEmbed = new EmbedBuilder()
                 .setTitle('👶 ELI5 - Explain Like I\'m 5')
                 .setColor('#FFA500')
@@ -58,27 +57,65 @@ module.exports = {
                 year: "numeric"
             }) + " " + now.toLocaleTimeString("id-ID");
 
-            // Check for image attachment
-            let imageDescription = null;
+            let attachedImage = null;
             if (message.attachments.size > 0) {
-                const attachment = message.attachments.first();
-                if (attachment.contentType?.startsWith('image/')) {
-                    await message.channel.send('🔍 Bentar, lagi analisa gambarnya...');
-                    imageDescription = await analyzeImageWithGemini(attachment.url);
-                    console.log('[ELI5] Image analyzed:', imageDescription?.substring(0, 100));
+                const firstAttachment = message.attachments.first();
+                if (firstAttachment.contentType?.startsWith('image/')) {
+                    attachedImage = firstAttachment;
                 }
             }
 
-            // Build final prompt
-            let finalPrompt = topic;
+            const activeModel = getActiveChatModelInfo();
+            let imageProcessedData = null;
+            let imageDescription = null;
+
+            if (attachedImage) {
+                if (activeModel.supportsVision) {
+                    try {
+                        imageProcessedData = await fetchAndProcessImage(attachedImage.url);
+                        console.log(`[ELI5] Menggunakan vision bawaan model utama (${activeModel.model})`);
+                    } catch (fetchErr) {
+                        console.warn('[ELI5] Fallback ke Gemini adapter:', fetchErr.message);
+                        imageDescription = await analyzeImageWithGemini(attachedImage.url);
+                    }
+                } else {
+                    await message.channel.send('🔍 Bentar, lagi analisa gambarnya lewat Gemini...');
+                    imageDescription = await analyzeImageWithGemini(attachedImage.url);
+                    console.log('[ELI5] Image analyzed via Gemini adapter:', imageDescription?.substring(0, 100));
+                }
+            }
+
+            let basePromptText = topic || 'Jelasin hal ini dong';
             if (imageDescription) {
-                finalPrompt = `${topic}\n\n[Context dari gambar: ${imageDescription}]`;
+                basePromptText = `${basePromptText}\n\n[Context dari gambar: ${imageDescription}]`;
+            }
+
+            let userContent;
+            if (imageProcessedData) {
+                userContent = [
+                    {
+                        type: 'text',
+                        text: `Jelasin ini dengan cara yang SUPER gampang dipahami: ${basePromptText}`,
+                    },
+                    {
+                        type: 'image_url',
+                        image_url: {
+                            url: imageProcessedData.dataUrl,
+                        },
+                    },
+                ];
+            } else {
+                userContent = `Jelasin ini dengan cara yang SUPER gampang dipahami: ${basePromptText}`;
             }
 
             await message.channel.send('🤔 Hmm, let me think...');
 
-            // Call local LLM with special ELI5 system prompt
-            const completion = await callLLMWithFallback(async (client) => {
+            const completion = await callLLMWithFallback(async (client, boundInfo) => {
+                let effectiveUserContent = userContent;
+                if (imageProcessedData && boundInfo?.model && !getActiveChatModelInfo().supportsVision && !boundInfo.model.includes('vision') && !boundInfo.model.includes('gemini') && !boundInfo.model.includes('gpt-4o')) {
+                    effectiveUserContent = `Jelasin ini dengan cara yang SUPER gampang dipahami: ${basePromptText}`;
+                }
+
                 return await client.chat.completions.create({
                     model: LLM_MODEL,
                     messages: [
@@ -148,7 +185,7 @@ module.exports = {
                         },
                         {
                             role: 'user',
-                            content: `Jelasin ini dengan cara yang SUPER gampang dipahami: ${finalPrompt}`
+                            content: effectiveUserContent,
                         }
                     ],
                     temperature: 0.8,
@@ -161,9 +198,8 @@ module.exports = {
             if (!explanation) {
                 return message.reply('Aduh, gue lagi bengong nih. Coba tanya lagi ya!');
             }
-            saveToChannelHistory(message.channel.id, `[ELI5: ${topic}] ${explanation.substring(0, 200)}...`, 'Bot Ditos', 'assistant');
+            saveToChannelHistory(message.channel.id, `[ELI5: ${topic || 'Image'}] ${explanation.substring(0, 200)}...`, 'Bot Ditos', 'assistant');
 
-            // Split reply helper
             function sendLongReply(msg, text) {
                 const MAX_LENGTH = 1900;
                 if (text.length <= MAX_LENGTH) {
@@ -191,8 +227,9 @@ module.exports = {
                 }
             }
 
+            const headerTopic = topic || 'Gambar yang lu kirim';
             const formattedReply =
-                `👶 **ELI5: ${topic}**\n\n` +
+                `👶 **ELI5: ${headerTopic}**\n\n` +
                 explanation +
                 `\n\n💡 *Udah paham? Kalau masih bingung, tanya lagi aja!*`;
 
@@ -203,7 +240,7 @@ module.exports = {
 
             if (error.message?.includes('rate_limit')) {
                 return message.reply(
-                    '⚠️ Model lokal sedang sibuk. Tunggu sebentar, lalu cek koneksi dengan `d!ls`.'
+                    '⚠️ Model lokal/LLM sedang sibuk. Tunggu sebentar, lalu cek koneksi dengan `d!ls`.'
                 );
             }
 

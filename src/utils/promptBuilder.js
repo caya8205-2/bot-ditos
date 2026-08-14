@@ -34,7 +34,7 @@ const COMPACT_PROMPTS = {
     chat: `${SHARED_PERSONA}
 Aturan chat command:
 - Jawab isi setelah prefix d!c atau d!chat; jangan menyebut atau mengulang prefix.
-- Jika ada [Ada gambar: ...], perlakukan sebagai deskripsi gambar yang kamu lihat. Beri insight/reaksi tanpa mengulang mentah dan jangan bilang tidak bisa melihat.
+- Jika ada gambar yang dikirim langsung atau deskripsi [Ada gambar: ...], respon isi gambar tersebut dengan insight/reaksi natural dan jangan bilang tidak bisa melihat gambar.
 - Jika diminta pekerjaan ekstrem seperti 5000 kata, skripsi, atau spam, tolak singkat dengan gaya malas Ditos.
 - Gunakan memory dan konteks channel sebagai referensi, tetapi fokus pada pertanyaan user saat ini.`,
     'auto-chat': `${SHARED_PERSONA}
@@ -48,6 +48,17 @@ Aturan auto-chat:
 
 function estimateTokens(value) {
     if (!value) return 0;
+    if (typeof value === 'object') {
+        if (Array.isArray(value)) {
+            return value.reduce((sum, item) => {
+                if (typeof item === 'string') return sum + estimateTokens(item);
+                if (item?.type === 'text') return sum + estimateTokens(item.text);
+                if (item?.type === 'image_url') return sum + 250; // standard image token estimate
+                return sum + estimateTokens(JSON.stringify(item));
+            }, 0);
+        }
+        return Math.ceil(JSON.stringify(value).length / 4);
+    }
     return Math.ceil(String(value).length / 4);
 }
 
@@ -56,15 +67,18 @@ function getMessageTokens(message) {
 }
 
 function classifyMessage(message, index, total) {
-    const content = message?.content || '';
+    const content = message?.content;
+    const textContent = typeof content === 'string'
+        ? content
+        : (Array.isArray(content) ? content.filter(c => c.type === 'text').map(c => c.text).join(' ') : '');
 
     if (index === 0 && message.role === 'system') return 'persona';
     if (index === total - 1 && message.role === 'user') return 'user_input';
-    if (content.startsWith('Waktu sekarang')) return 'time';
-    if (content.includes('Info tambahan global') || content.includes('Info global server')) return 'global_memory';
-    if (content.includes('Info tambahan tentang user') || content.startsWith('Info tentang ')) return 'user_memory';
-    if (content.includes('KONTEKS CHANNEL') || content.includes('Obrolan terakhir di channel')) return 'channel_history';
-    if (content.includes('User minta mention')) return 'mention';
+    if (textContent.startsWith('Waktu sekarang')) return 'time';
+    if (textContent.includes('Info tambahan global') || textContent.includes('Info global server')) return 'global_memory';
+    if (textContent.includes('Info tambahan tentang user') || textContent.startsWith('Info tentang ')) return 'user_memory';
+    if (textContent.includes('KONTEKS CHANNEL') || textContent.includes('Obrolan terakhir di channel')) return 'channel_history';
+    if (textContent.includes('User minta mention')) return 'mention';
     return message.role === 'system' ? 'dynamic_system' : message.role;
 }
 
@@ -114,6 +128,7 @@ function splitPrimarySystem(message, label) {
 }
 
 function truncateContent(content, targetTokens, keepTail = false) {
+    if (typeof content !== 'string') return content;
     const maxChars = Math.max(0, targetTokens * 4);
     if (content.length <= maxChars) return content;
     if (maxChars < 80) return content.slice(0, maxChars);
@@ -144,6 +159,7 @@ function applyTokenBudget(messages, budget) {
     for (const section of trimOrder) {
         for (let index = 0; index < prepared.length && total > budget; index++) {
             if (classifyMessage(prepared[index], index, prepared.length) !== section) continue;
+            if (typeof prepared[index].content !== 'string') continue;
 
             const currentTokens = getMessageTokens(prepared[index]);
             const minimum = minimumTokens[section];

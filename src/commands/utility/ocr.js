@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
-const { analyzeImageWithGemini } = require('../../utils/geminiManager');
+const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('../../utils/llmManager');
+const { fetchAndProcessImage, analyzeImageWithGemini } = require('../../utils/geminiManager');
 const { OWNER_ID } = require('../../config');
 
 module.exports = {
@@ -12,7 +13,7 @@ module.exports = {
                 .setTitle('📸 OCR - Text Extraction')
                 .setColor('#00D9FF')
                 .setDescription(
-                    'Extract text dari gambar pakai Gemini Vision!\n\n' +
+                    'Extract text dari gambar pakai Model Vision / OCR!\n\n' +
                     '**Cara pakai:**\n' +
                     '1. Upload gambar (screenshot, foto dokumen, meme, dll)\n' +
                     '2. Ketik `d!ocr` di caption atau setelah upload\n\n' +
@@ -33,7 +34,7 @@ module.exports = {
                         inline: false
                     }
                 )
-                .setFooter({ text: 'Powered by Gemini Vision API' });
+                .setFooter({ text: 'Powered by Vision & Gemini API' });
 
             return message.reply({ embeds: [usageEmbed] });
         }
@@ -47,13 +48,58 @@ module.exports = {
         try {
             await message.channel.send('🔍 Bentar, lagi baca textnya...');
 
-            const prompt =
+            const ocrInstruction =
                 'Extract ALL text from this image. ' +
                 'Return ONLY the extracted text, preserve the original formatting and line breaks. ' +
                 'If there is no text in the image, respond with "[No text found]". ' +
                 'Do not add any commentary or explanation, just the text itself.';
 
-            const extractedText = await analyzeImageWithGemini(attachment.url, prompt);
+            const activeModel = getActiveChatModelInfo();
+            let extractedText = null;
+
+            // 1. Coba gunakan model utama jika support vision
+            if (activeModel.supportsVision) {
+                try {
+                    console.log(`[OCR] Menggunakan direct vision dari model chat (${activeModel.model})...`);
+                    const imageInfo = await fetchAndProcessImage(attachment.url);
+
+                    const completion = await callLLMWithFallback(async (llmClient) => {
+                        return await llmClient.chat.completions.create({
+                            model: LLM_MODEL,
+                            messages: [
+                                {
+                                    role: 'user',
+                                    content: [
+                                        {
+                                            type: 'text',
+                                            text: ocrInstruction,
+                                        },
+                                        {
+                                            type: 'image_url',
+                                            image_url: {
+                                                url: imageInfo.dataUrl,
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                            temperature: 0,
+                            max_tokens: 1500,
+                        });
+                    });
+
+                    extractedText = completion.choices?.[0]?.message?.content?.trim();
+                } catch (directVisionErr) {
+                    console.warn(`[OCR] Gagal OCR dengan model utama (${activeModel.model}), fallback ke Gemini Vision:`, directVisionErr.message);
+                    extractedText = null;
+                }
+            }
+
+            // 2. Fallback atau jika model chat tidak support vision -> lempar ke Gemini Vision adapter
+            if (!extractedText) {
+                console.log('[OCR] Melempar OCR ke Gemini Vision adapter...');
+                extractedText = await analyzeImageWithGemini(attachment.url, ocrInstruction);
+            }
 
             if (!extractedText || extractedText.trim() === '') {
                 return message.reply('❌ Gak nemu text di gambar ini. Mungkin gambarnya blur atau emang gak ada text.');
@@ -113,7 +159,7 @@ module.exports = {
 
             if (error.message?.includes('rate_limit')) {
                 return message.reply(
-                    '⚠️ Kena rate limit dari Gemini. Tunggu sebentar ya (~1 menit).'
+                    '⚠️ Kena rate limit. Tunggu sebentar ya (~1 menit).'
                 );
             }
 

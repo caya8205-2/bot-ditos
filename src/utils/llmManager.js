@@ -15,6 +15,7 @@ const {
     isNinerAvailable,
     callNiner,
 } = require('./ninerManager');
+const { isVisionSupported } = require('./visionHelper');
 
 const GROQ_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile';
 const LOCAL_LLM_FALLBACK_COOLDOWN_MS = Math.max(
@@ -108,6 +109,25 @@ async function callLLMWithFallback(requestFn, options = {}) {
     return callNinerFallback(requestFn, options);
 }
 
+/**
+ * Cek model aktif yang akan digunakan di chat request berikutnya
+ */
+function getActiveChatModelInfo() {
+    if (Date.now() < ninerUnavailableUntil || !isNinerAvailable()) {
+        return {
+            provider: 'groq',
+            model: GROQ_FALLBACK_MODEL,
+            supportsVision: isVisionSupported(GROQ_FALLBACK_MODEL),
+        };
+    }
+
+    return {
+        provider: 'niner',
+        model: NINER_MODEL,
+        supportsVision: isVisionSupported(NINER_MODEL),
+    };
+}
+
 function getLLMProviderStatus() {
     return {
         primary: {
@@ -119,6 +139,7 @@ function getLLMProviderStatus() {
             unavailableUntil: ninerUnavailableUntil,
             onCooldown: Date.now() < ninerUnavailableUntil,
             lastError: lastNinerError?.message || null,
+            supportsVision: isVisionSupported(NINER_MODEL),
         },
         secondary: {
             provider: 'niner',
@@ -129,11 +150,13 @@ function getLLMProviderStatus() {
             unavailableUntil: ninerUnavailableUntil,
             onCooldown: Date.now() < ninerUnavailableUntil,
             lastError: lastNinerError?.message || null,
+            supportsVision: isVisionSupported(NINER_MODEL),
         },
         fallback: {
             provider: 'groq',
             model: GROQ_FALLBACK_MODEL,
             available: isGroqFallbackAvailable(),
+            supportsVision: isVisionSupported(GROQ_FALLBACK_MODEL),
         },
         localUnavailableUntil,
         localOnCooldown: Date.now() < localUnavailableUntil,
@@ -150,4 +173,6 @@ module.exports = {
     callLLMWithFallback,
     createModelBoundClient,
     getLLMProviderStatus,
+    getActiveChatModelInfo,
+    isVisionSupported,
 };
