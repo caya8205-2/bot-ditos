@@ -29,6 +29,45 @@ function hasAudioCache(videoId) {
     }
 }
 
+function getTempAudioFilePath(videoId) {
+    ensureCacheDir();
+    return path.join(CACHE_DIR, `${videoId}.tmp.opus`);
+}
+
+function commitAudioCache(videoId) {
+    if (!videoId) return;
+    const tempPath = getTempAudioFilePath(videoId);
+    const finalPath = getAudioFilePath(videoId);
+    try {
+        if (fs.existsSync(tempPath)) {
+            const stat = fs.statSync(tempPath);
+            if (stat.size > 50000) {
+                // Rename atomic
+                fs.renameSync(tempPath, finalPath);
+                console.log(`[AudioCache] Cache committed: ${videoId}.opus (${Math.round(stat.size / 1024)} KB)`);
+                pruneCacheIfNeeded();
+                return true;
+            } else {
+                fs.unlinkSync(tempPath);
+            }
+        }
+    } catch (err) {
+        console.warn(`[AudioCache] Commit cache failed for ${videoId}:`, err.message);
+        try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    }
+    return false;
+}
+
+function discardTempAudioCache(videoId) {
+    if (!videoId) return;
+    const tempPath = getTempAudioFilePath(videoId);
+    try {
+        if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+        }
+    } catch {}
+}
+
 function pruneCacheIfNeeded() {
     try {
         ensureCacheDir();
@@ -37,7 +76,7 @@ function pruneCacheIfNeeded() {
         const fileStats = [];
 
         for (const file of files) {
-            if (!file.endsWith('.opus')) continue;
+            if (!file.endsWith('.opus') || file.endsWith('.tmp.opus')) continue;
             const fullPath = path.join(CACHE_DIR, file);
             try {
                 const stat = fs.statSync(fullPath);
@@ -70,6 +109,9 @@ function pruneCacheIfNeeded() {
 
 module.exports = {
     getAudioFilePath,
+    getTempAudioFilePath,
     hasAudioCache,
+    commitAudioCache,
+    discardTempAudioCache,
     pruneCacheIfNeeded,
 };

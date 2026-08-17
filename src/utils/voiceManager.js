@@ -21,8 +21,15 @@ const youtubeResolver = require('./youtubeResolver');
 const musicCache = require('./musicCache');
 const { getPrefetched, consumePrefetch, schedulePrefetch } = require('./prefetchManager');
 
-const { PassThrough } = require('stream');
-const { getAudioFilePath, hasAudioCache, pruneCacheIfNeeded } = require('./audioFileCache');
+const { PassThrough, Readable } = require('stream');
+const {
+    getAudioFilePath,
+    getTempAudioFilePath,
+    hasAudioCache,
+    commitAudioCache,
+    discardTempAudioCache,
+    pruneCacheIfNeeded,
+} = require('./audioFileCache');
 
 // ─── Song Resolution ──────────────────────────────────────────────────────────
 
@@ -144,27 +151,38 @@ async function playNext(guildId) {
 
     try {
         const isLocalCache = song.videoId && hasAudioCache(song.videoId);
-        let ffmpegArgs = [];
+        let child;
 
         if (isLocalCache) {
             console.log(`[Music] Local Audio Cache HIT: ${song.title}`);
-            ffmpegArgs = [
+            const ffmpegArgs = [
                 '-i', getAudioFilePath(song.videoId),
                 '-loglevel', 'warning',
                 '-c:a', 'copy',
                 '-f', 'ogg',
                 'pipe:1',
             ];
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
         } else {
             const streamUrl = await getStreamUrl(song);
             song.streamUrl = streamUrl;
-            ffmpegArgs = [
-                '-reconnect', '1',
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '5',
-                '-headers',
-                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
-                '-i', streamUrl,
+
+            // Fetch via Node HTTP client to avoid YouTube 403 blocks on FFmpeg
+            let res = await fetch(streamUrl, { headers: { Range: 'bytes=0-' } });
+            if (!res.ok) {
+                // Auto-recovery: Jika URL kedaluwarsa/403, resolve ulang fresh
+                console.warn(`[Music] Fetch status ${res.status}, re-resolving fresh URL: ${song.title}`);
+                const freshAudio = await youtubeResolver.resolveAudioUrl(song.videoId);
+                song.streamUrl = freshAudio.url;
+                musicCache.refreshTrackUrl(song.videoId, freshAudio.url);
+                res = await fetch(freshAudio.url, { headers: { Range: 'bytes=0-' } });
+                if (!res.ok) {
+                    throw new Error(`Fetch audio stream failed with status ${res.status}`);
+                }
+            }
+
+            const ffmpegArgs = [
+                '-i', 'pipe:0',
                 '-loglevel', 'warning',
                 '-c:a', 'libopus',
                 '-f', 'ogg',
@@ -172,12 +190,23 @@ async function playNext(guildId) {
                 '-ac', '2',
                 'pipe:1',
             ];
-        }
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stdin.on('error', () => {});
 
-        const child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const bodyStream = Readable.fromWeb(res.body);
+            bodyStream.pipe(child.stdin);
+            bodyStream.on('error', (err) => {
+                console.warn('[Music] Body stream error:', err.message);
+                try { child.stdin.destroy(); } catch {}
+            });
+        }
 
         child.on('error', (err) => {
             console.error('[Music] FFmpeg process error:', err.message);
+            if (song.videoId) {
+                discardTempAudioCache(song.videoId);
+                musicCache.invalidateTrackUrl(song.videoId);
+            }
         });
 
         child.stderr.on('data', (data) => {
@@ -185,18 +214,21 @@ async function playNext(guildId) {
             if (msg) console.warn(`[FFmpeg] ${msg}`);
         });
 
-        // Simpan ke local disk cache jika belum ada
+        // Simpan ke local disk cache secara atomic (hanya jika lagu selesai 100% tanpa di-stop/skip di tengah)
         if (!isLocalCache && song.videoId) {
-            const cachePath = getAudioFilePath(song.videoId);
-            const writeStream = fs.createWriteStream(cachePath);
+            const tempPath = getTempAudioFilePath(song.videoId);
+            const writeStream = fs.createWriteStream(tempPath);
             child.stdout.pipe(writeStream);
-            writeStream.on('finish', () => {
-                console.log(`[Music] Saved local audio cache: ${song.title}`);
-                pruneCacheIfNeeded();
+            child.on('close', (code) => {
+                if (code === 0 && !queue.isSeeking && !queue.isPreviousAction) {
+                    commitAudioCache(song.videoId);
+                } else {
+                    discardTempAudioCache(song.videoId);
+                }
             });
             writeStream.on('error', (err) => {
                 console.warn('[Music] Write local audio cache error:', err.message);
-                try { fs.unlinkSync(cachePath); } catch {}
+                discardTempAudioCache(song.videoId);
             });
         }
 
@@ -237,6 +269,7 @@ async function playNext(guildId) {
 
     } catch (err) {
         console.error('[Music] playNext error:', err.message);
+        if (song?.videoId) musicCache.invalidateTrackUrl(song.videoId);
         queue.songs.shift();
         setTimeout(() => playNext(guildId), 1000);
     }
@@ -252,10 +285,10 @@ async function seekAudio(guildId, targetSeconds) {
         const song = queue.nowPlaying;
         const safeSeek = Math.max(0, Math.floor(targetSeconds));
         const isLocalCache = song.videoId && hasAudioCache(song.videoId);
-        let ffmpegArgs = [];
+        let child;
 
         if (isLocalCache) {
-            ffmpegArgs = [
+            const ffmpegArgs = [
                 '-ss', String(safeSeek),
                 '-i', getAudioFilePath(song.videoId),
                 '-loglevel', 'warning',
@@ -263,16 +296,24 @@ async function seekAudio(guildId, targetSeconds) {
                 '-f', 'ogg',
                 'pipe:1',
             ];
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
         } else {
             const streamUrl = song.streamUrl || await getStreamUrl(song);
-            ffmpegArgs = [
+            let res = await fetch(streamUrl, { headers: { Range: 'bytes=0-' } });
+            if (!res.ok) {
+                console.warn(`[Music] Seek fetch status ${res.status}, re-resolving fresh URL: ${song.title}`);
+                const freshAudio = await youtubeResolver.resolveAudioUrl(song.videoId);
+                song.streamUrl = freshAudio.url;
+                musicCache.refreshTrackUrl(song.videoId, freshAudio.url);
+                res = await fetch(freshAudio.url, { headers: { Range: 'bytes=0-' } });
+                if (!res.ok) {
+                    throw new Error(`Fetch audio stream for seek failed: ${res.status}`);
+                }
+            }
+
+            const ffmpegArgs = [
                 '-ss', String(safeSeek),
-                '-reconnect', '1',
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '5',
-                '-headers',
-                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nReferer: https://www.youtube.com/\r\n',
-                '-i', streamUrl,
+                '-i', 'pipe:0',
                 '-loglevel', 'warning',
                 '-c:a', 'libopus',
                 '-f', 'ogg',
@@ -280,9 +321,15 @@ async function seekAudio(guildId, targetSeconds) {
                 '-ac', '2',
                 'pipe:1',
             ];
-        }
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stdin.on('error', () => {});
 
-        const child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+            const bodyStream = Readable.fromWeb(res.body);
+            bodyStream.pipe(child.stdin);
+            bodyStream.on('error', () => {
+                try { child.stdin.destroy(); } catch {}
+            });
+        }
 
         child.on('error', (err) => {
             console.error('[Music] FFmpeg seek error:', err.message);

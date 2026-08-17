@@ -5,18 +5,35 @@
 // - Primary resolver: Innertube (no subprocess, no scraping)
 // - Multi-client fallback: ANDROID → IOS → WEB → MWEB → TV_SIMPLY → ANDROID_VR
 
-const YOUTUBEI_CLIENTS = ['ANDROID', 'IOS', 'WEB', 'MWEB', 'TV_SIMPLY', 'ANDROID_VR'];
+const { Innertube, Platform } = require('youtubei.js');
+
+const YOUTUBEI_CLIENTS = ['ANDROID_VR', 'IOS', 'TV_SIMPLY', 'MWEB', 'ANDROID', 'WEB'];
 const URL_EXPIRY_MS = (5 * 60 + 45) * 60 * 1000; // 5h45m — conservative YT URL expiry
 
-// Singleton — lazy init
 let innertubePromise = null;
 
 async function getInnertube() {
     if (!innertubePromise) {
-        innertubePromise = (async () => {
-            const { Innertube } = await import('youtubei.js');
-            return Innertube.create();
-        })();
+        // Setup JavaScript evaluator required for deciphering URL obfuscation
+        Platform.shim.eval = async (arg) => {
+            if (typeof arg === 'string') {
+                try {
+                    return new Function(`return (${arg})`)();
+                } catch {
+                    return new Function(arg)();
+                }
+            }
+            if (typeof arg === 'object' && arg !== null) {
+                const code = arg.output || arg.code;
+                if (code) {
+                    const fn = new Function(code);
+                    return fn();
+                }
+            }
+            return eval(arg);
+        };
+
+        innertubePromise = Innertube.create();
     }
     return innertubePromise;
 }
@@ -106,10 +123,10 @@ async function getStreamingDataWithFallback(videoId) {
     const youtube = await getInnertube();
     const failures = [];
 
-    // Try audio/mp4 first (most compatible), then any audio format
+    // Try native opus/best audio format first
     const optionSets = [
-        { type: 'audio', quality: 'best', format: 'mp4' },
         { type: 'audio', quality: 'best', format: 'any' },
+        { type: 'audio', quality: 'best', format: 'mp4' },
     ];
 
     for (const client of YOUTUBEI_CLIENTS) {

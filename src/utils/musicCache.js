@@ -81,50 +81,22 @@ function rowToTrack(row) {
 /** Cek apakah URL stream masih valid (belum expired). */
 function isUrlFresh(track) {
     if (!track?.audioUrl) return false;
-    
-    // IP-locked URLs (contain &ip= parameter) are never fresh
-    // These URLs are tied to specific client IP and will 403 from different IPs
-    if (track.audioUrl.includes('&ip=')) {
-        return false;
-    }
-    
     return Date.now() < track.audioUrlExpiry;
 }
 
 /** Lookup by search query string. */
 function getCachedByQuery(query) {
-    const track = rowToTrack(stmts().getByQuery.get(hashQuery(query)));
-    
-    // Auto-invalidate IP-locked URLs
-    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
-        track.audioUrlExpiry = 0; // Mark as expired
-    }
-    
-    return track;
+    return rowToTrack(stmts().getByQuery.get(hashQuery(query)));
 }
 
 /** Lookup langsung by videoId. */
 function getCachedById(videoId) {
-    const track = rowToTrack(stmts().getById.get(videoId));
-    
-    // Auto-invalidate IP-locked URLs
-    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
-        track.audioUrlExpiry = 0; // Mark as expired
-    }
-    
-    return track;
+    return rowToTrack(stmts().getById.get(videoId));
 }
 
 /** Lookup by Spotify track ID. */
 function getCachedBySpotifyId(spotifyId) {
-    const track = rowToTrack(stmts().getBySpotifyId.get(spotifyId));
-    
-    // Auto-invalidate IP-locked URLs
-    if (track?.audioUrl && track.audioUrl.includes('&ip=')) {
-        track.audioUrlExpiry = 0; // Mark as expired
-    }
-    
-    return track;
+    return rowToTrack(stmts().getBySpotifyId.get(spotifyId));
 }
 
 /**
@@ -175,6 +147,14 @@ function recordPlay(videoId) {
     stmts().recordPlay.run(Date.now(), videoId);
 }
 
+/** Invalidate URL saat stream gagal. */
+function invalidateTrackUrl(videoId) {
+    if (!videoId) return;
+    try {
+        stmts().refreshUrl.run(null, 0, videoId);
+    } catch {}
+}
+
 /** Stats. */
 function getCacheStats() {
     return {
@@ -190,6 +170,7 @@ module.exports = {
     getCachedBySpotifyId,
     upsertTrack,
     refreshTrackUrl,
+    invalidateTrackUrl,
     recordPlay,
     getCacheStats,
 };
