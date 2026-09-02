@@ -1,4 +1,4 @@
-require('dotenv').config();
+
 
 const {
     LOCAL_LLM_MODEL,
@@ -72,10 +72,16 @@ async function callGroqFallback(requestFn, options = {}) {
     }
 
     const groqCaller = options.groqCaller || callGroqWithFallback;
-    return groqCaller((groq) => requestFn(
+    const result = await groqCaller((groq) => requestFn(
         createModelBoundClient(groq, GROQ_FALLBACK_MODEL),
         { provider: 'groq', model: GROQ_FALLBACK_MODEL }
     ));
+
+    if (!result?.choices?.[0]?.message?.content?.trim()) {
+        throw new Error('Groq returned empty response');
+    }
+
+    return result;
 }
 
 async function callNinerFallback(requestFn, options = {}) {
@@ -89,6 +95,11 @@ async function callNinerFallback(requestFn, options = {}) {
             createModelBoundClient(client, NINER_MODEL),
             { provider: 'niner', model: NINER_MODEL }
         ));
+
+        if (!result?.choices?.[0]?.message?.content?.trim()) {
+            throw new Error('Niner returned empty response');
+        }
+
         lastNinerError = null;
         return result;
     } catch (ninerError) {

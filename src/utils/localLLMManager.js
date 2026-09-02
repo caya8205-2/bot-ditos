@@ -1,4 +1,4 @@
-require('dotenv').config();
+
 const OpenAI = require('openai');
 const { OWNER_ID } = require('../config');
 

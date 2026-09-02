@@ -1,4 +1,4 @@
-require('dotenv').config();
+
 const Groq = require('groq-sdk');
 
 const GROQ_KEYS = [

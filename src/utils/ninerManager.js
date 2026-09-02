@@ -1,4 +1,4 @@
-require('dotenv').config();
+
 const OpenAI = require('openai');
 
 function readEnv(primaryKey, fallbackKey) {

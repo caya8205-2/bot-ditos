@@ -1,4 +1,4 @@
-require('dotenv').config();
+
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
 const sharp = require('sharp');

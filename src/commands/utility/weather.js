@@ -1,7 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { replyEmbedAndSave } = require('../../utils/helpers');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-require('dotenv').config();
+
 
 module.exports = {
     name: 'w',
