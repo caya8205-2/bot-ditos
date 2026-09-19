@@ -1,10 +1,10 @@
-# Bot Ditos
+﻿# Bot Ditos
 
 [![Discord.js](https://img.shields.io/badge/Discord.js-v14-5865F2)](https://discord.js.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-24-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-Local-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![innertube-rs](https://img.shields.io/badge/innertube--rs-Rust-DEA584?logo=rust&logoColor=white)](https://github.com/caya8205-2/innertube-rs)
-[![spotstream](https://img.shields.io/badge/spotstream-Spotify%20Direct-1DB954?logo=spotify&logoColor=white)](https://github.com/caya8205-2/spotstream)
+[![innertube-rs](https://img.shields.io/badge/innertube--rs-MIT-DEA584?logo=rust&logoColor=white)](https://github.com/caya8205-2/innertube-rs)
+[![spotstream](https://img.shields.io/badge/spotstream-MIT-1DB954?logo=spotify&logoColor=white)](https://github.com/caya8205-2/spotstream)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Audio-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![MIT](https://img.shields.io/badge/License-MIT-white)](./LICENSE)
 
