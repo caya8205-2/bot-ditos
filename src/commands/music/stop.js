@@ -1,4 +1,5 @@
 const { musicQueues } = require('../../data/state');
+const { generateMusicEmbed, getMusicButtons } = require('../../utils/uiHelpers');
 
 module.exports = {
     name: 'stop',
@@ -18,7 +19,13 @@ module.exports = {
         queue.player.stop();
 
         const embed = generateMusicEmbed(guildId);
-        if (embed) { }
+        if (embed) {
+            return message.channel.send({
+                content: '⏹ Musik distop, antrian dihapus. (Bot stay di voice)',
+                embeds: [embed],
+                components: getMusicButtons(guildId),
+            });
+        }
         return message.reply('⏹ Musik distop, antrian dihapus. (Bot stay di voice)');
     },
 };

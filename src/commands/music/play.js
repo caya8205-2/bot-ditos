@@ -12,6 +12,7 @@ const { spotifyApi } = require('../../utils/spotifyManager');
 const { generateMusicEmbed, getMusicButtons } = require('../../utils/uiHelpers');
 const youtubeResolver = require('../../utils/youtubeResolver');
 const youtubeMatcher = require('../../utils/youtubeMatcher');
+const spotifyResolver = require('../../utils/spotifyResolver');
 const { schedulePrefetch } = require('../../utils/prefetchManager');
 
 // ─── Helper: buat queue baru (listener dipasang sekali) ──────────────────────
@@ -131,162 +132,231 @@ module.exports = {
         }
 
         // ── 2. Spotify ───────────────────────────────────────────────────────
-        if (query.includes('spotify.com')) {
+        if (spotifyResolver.isSpotifyUrl(query)) {
             try {
-                await message.reply('Bentar ya, lagi convert dari Spotify...');
-                const spotifyRegex = /spotify\.com\/(track|playlist|album)\/([a-zA-Z0-9]+)/;
-                const match = query.match(spotifyRegex);
+                const parsed = spotifyResolver.parseSpotifyUrl(query);
+                if (!parsed) return message.reply('Link Spotify-nya gak valid');
 
-                if (!match) return message.reply('Link Spotify-nya gak valid');
-
-                const [, type, id] = match;
+                const { type, id } = parsed;
+                const spotstreamActive = await spotifyResolver.isSpotstreamReady();
 
                 // TRACK
                 if (type === 'track') {
                     const { body: track } = await spotifyApi.getTrack(id);
-                    const spotifyTrack = {
-                        title: track.name,
-                        artist: track.artists.map(a => a.name).join(', '),
-                        duration: Math.round(track.duration_ms / 1000),
-                        spotifyId: track.id,
-                    };
-
-                    // Match ke YouTube pakai youtubeMatcher
-                    const matched = await youtubeMatcher.matchSpotifyTrackToYoutube(spotifyTrack);
-                    if (!matched) return message.reply(`Gak nemu "${track.name}" di YouTube`);
-
-                    const song = {
-                        title: matched.youtubeTitle || track.name,
-                        artist: matched.youtubeArtist || spotifyTrack.artist,
-                        videoId: matched.youtubeId,
-                        url: `https://www.youtube.com/watch?v=${matched.youtubeId}`,
-                        spotifyId: track.id,
-                        requestedBy: message.author.tag,
-                    };
 
                     let queue = musicQueues.get(guildId);
                     const wasEmpty = !queue?.songs?.length;
                     if (!queue) queue = createQueue(guildId, voiceChannel, message.channel);
 
-                    queue.songs.push(song);
-                    await message.reply(`Nambahin **${song.title}** ke antrian`);
-                    if (wasEmpty) playNext(guildId);
-                    return;
+                    if (spotstreamActive) {
+                        const song = {
+                            title: track.name,
+                            artist: track.artists.map(a => a.name).join(', '),
+                            duration: Math.round(track.duration_ms / 1000),
+                            spotifyId: track.id,
+                            source: 'spotify',
+                            url: `https://open.spotify.com/track/${track.id}`,
+                            thumbnail: track.album?.images?.[0]?.url || '',
+                            requestedBy: message.author.tag,
+                        };
+
+                        queue.songs.push(song);
+                        await message.reply(`Nambahin **${song.title}** ke antrian (🟢 Spotify Direct 320kbps)`);
+                        if (wasEmpty) playNext(guildId);
+                        return;
+                    } else {
+                        // Fallback YouTube Matcher
+                        const spotifyTrack = {
+                            title: track.name,
+                            artist: track.artists.map(a => a.name).join(', '),
+                            duration: Math.round(track.duration_ms / 1000),
+                            spotifyId: track.id,
+                        };
+                        const matched = await youtubeMatcher.matchSpotifyTrackToYoutube(spotifyTrack);
+                        if (!matched) return message.reply(`Gak nemu "${track.name}" di YouTube`);
+
+                        const song = {
+                            title: matched.youtubeTitle || track.name,
+                            artist: matched.youtubeArtist || spotifyTrack.artist,
+                            videoId: matched.youtubeId,
+                            url: `https://www.youtube.com/watch?v=${matched.youtubeId}`,
+                            spotifyId: track.id,
+                            requestedBy: message.author.tag,
+                        };
+
+                        queue.songs.push(song);
+                        await message.reply(`Nambahin **${song.title}** ke antrian (YouTube Fallback)`);
+                        if (wasEmpty) playNext(guildId);
+                        return;
+                    }
                 }
 
                 // PLAYLIST
                 if (type === 'playlist') {
-                    const { body: playlist } = await spotifyApi.getPlaylist(id);
-                    const tracks = playlist.tracks.items.slice(0, 100)
-                        .filter(item => item.track)
-                        .map(item => ({
-                            title: item.track.name,
-                            artist: item.track.artists.map(a => a.name).join(', '),
-                            duration: Math.round(item.track.duration_ms / 1000),
-                            spotifyId: item.track.id,
-                        }));
+                    let playlistName = 'Spotify Playlist';
+                    let tracks = [];
 
                     let queue = musicQueues.get(guildId);
                     const wasEmpty = !queue?.songs?.length;
                     if (!queue) queue = createQueue(guildId, voiceChannel, message.channel);
 
-                    // Lazy: push dulu tanpa videoId, resolve saat giliran play (JIT)
-                    const newSongs = tracks.map(t => ({
-                        title: `${t.title} - ${t.artist}`,
-                        artist: t.artist,
-                        duration: t.duration,
-                        spotifyId: t.spotifyId,
-                        videoId: null,
-                        url: null,
-                        isResolved: false,
-                        requestedBy: message.author.tag,
-                    }));
+                    // 1. Coba ambil via spotstream dulu (support playlist personalisasi Daily Mix / Made for You)
+                    if (spotstreamActive) {
+                        try {
+                            const spotPl = await spotifyResolver.getPlaylistInfo(id);
+                            if (spotPl && spotPl.tracks && spotPl.tracks.length > 0) {
+                                playlistName = spotPl.name || 'Spotify Playlist';
+                                const trackIds = spotPl.tracks.map(t => t.id).filter(Boolean);
 
-                    queue.songs.push(...newSongs);
-                    await message.reply(
-                        `✅ Berhasil nambahin playlist Spotify **${playlist.name}** (${newSongs.length} lagu).`
-                    );
-
-                    if (wasEmpty && queue.songs.length > 0) {
-                        // Resolve lagu pertama sebelum play
-                        const first = queue.songs[0];
-                        const matchedFirst = await youtubeMatcher.matchSpotifyTrackToYoutube({
-                            title: first.title.split(' - ')[0],
-                            artist: first.artist,
-                            duration: first.duration,
-                            spotifyId: first.spotifyId,
-                        });
-                        if (matchedFirst) {
-                            first.videoId = matchedFirst.youtubeId;
-                            first.url = `https://www.youtube.com/watch?v=${matchedFirst.youtubeId}`;
-                            first.isResolved = true;
+                                // Batch fetch track metadata via Spotify Web API (50 per batch)
+                                const batchSize = 50;
+                                for (let i = 0; i < Math.min(trackIds.length, 100); i += batchSize) {
+                                    const chunk = trackIds.slice(i, i + batchSize);
+                                    try {
+                                        const res = await spotifyApi.getTracks(chunk);
+                                        const fullTracks = (res.body.tracks || []).filter(Boolean);
+                                        tracks.push(...fullTracks);
+                                    } catch (err) {
+                                        console.warn('[Play] getTracks chunk error:', err.message);
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.warn('[Play] spotstream getPlaylistInfo failed, fallback to Web API:', err.message);
                         }
-                        playNext(guildId);
                     }
 
-                    // Background: match + prefetch lagu ke-2 dan ke-3
-                    (async () => {
-                        const toMatch = newSongs.slice(1, 3).filter(s => !s.videoId);
-                        for (const s of toMatch) {
-                            const m = await youtubeMatcher.matchSpotifyTrackToYoutube({
-                                title: s.title.split(' - ')[0],
-                                artist: s.artist,
-                                duration: s.duration,
-                                spotifyId: s.spotifyId,
-                            }).catch(() => null);
-                            if (m) {
-                                s.videoId = m.youtubeId;
-                                s.url = `https://www.youtube.com/watch?v=${m.youtubeId}`;
-                                s.isResolved = true;
-                            }
-                        }
-                        const ids = newSongs.slice(1, 4).filter(s => s.videoId).map(s => s.videoId);
-                        if (ids.length) schedulePrefetch(ids).catch(() => {});
-                    })();
+                    // 2. Jika belum dapet (misal spotstream mati atau bukan personalized), ambil via spotifyApi standard
+                    if (tracks.length === 0) {
+                        const { body: playlist } = await spotifyApi.getPlaylist(id);
+                        playlistName = playlist.name;
+                        tracks = (playlist.tracks.items || [])
+                            .filter(item => item.track)
+                            .map(item => item.track)
+                            .slice(0, 100);
+                    }
 
-                    return;
+                    if (tracks.length === 0) {
+                        return message.reply('Playlist ini kosong atau gak bisa dibaca.');
+                    }
+
+                    if (spotstreamActive) {
+                        const newSongs = tracks.map(track => ({
+                            title: track.name,
+                            artist: (track.artists || []).map(a => a.name).join(', ') || 'Unknown',
+                            duration: Math.round((track.duration_ms || 0) / 1000),
+                            spotifyId: track.id,
+                            source: 'spotify',
+                            url: `https://open.spotify.com/track/${track.id}`,
+                            thumbnail: track.album?.images?.[0]?.url || '',
+                            requestedBy: message.author.tag,
+                        }));
+
+                        queue.songs.push(...newSongs);
+                        await message.reply(
+                            `✅ Berhasil nambahin playlist Spotify **${playlistName}** (${newSongs.length} lagu, 🟢 Spotify Direct 320kbps).`
+                        );
+                        if (wasEmpty) playNext(guildId);
+                        return;
+                    } else {
+                        // Legacy lazy YouTube resolve
+                        const newSongs = tracks.map(track => ({
+                            title: `${track.name} - ${(track.artists || []).map(a => a.name).join(', ') || 'Unknown'}`,
+                            artist: (track.artists || []).map(a => a.name).join(', ') || 'Unknown',
+                            duration: Math.round((track.duration_ms || 0) / 1000),
+                            spotifyId: track.id,
+                            videoId: null,
+                            url: null,
+                            isResolved: false,
+                            requestedBy: message.author.tag,
+                        }));
+
+                        queue.songs.push(...newSongs);
+                        await message.reply(
+                            `✅ Berhasil nambahin playlist Spotify **${playlistName}** (${newSongs.length} lagu).`
+                        );
+
+                        if (wasEmpty && queue.songs.length > 0) {
+                            const first = queue.songs[0];
+                            const matchedFirst = await youtubeMatcher.matchSpotifyTrackToYoutube({
+                                title: first.title.split(' - ')[0],
+                                artist: first.artist,
+                                duration: first.duration,
+                                spotifyId: first.spotifyId,
+                            });
+                            if (matchedFirst) {
+                                first.videoId = matchedFirst.youtubeId;
+                                first.url = `https://www.youtube.com/watch?v=${matchedFirst.youtubeId}`;
+                                first.isResolved = true;
+                            }
+                            playNext(guildId);
+                        }
+                        return;
+                    }
                 }
 
                 // ALBUM
                 if (type === 'album') {
                     const { body: album } = await spotifyApi.getAlbum(id);
-                    const newSongs = album.tracks.items.map(track => ({
-                        title: `${track.name} - ${track.artists[0].name}`,
-                        artist: track.artists[0].name,
-                        duration: Math.round(track.duration_ms / 1000),
-                        spotifyId: track.id,
-                        videoId: null,
-                        url: null,
-                        isResolved: false,
-                        requestedBy: message.author.tag,
-                    }));
+                    const tracks = album.tracks.items || [];
 
                     let queue = musicQueues.get(guildId);
                     const wasEmpty = !queue?.songs?.length;
                     if (!queue) queue = createQueue(guildId, voiceChannel, message.channel);
 
-                    queue.songs.push(...newSongs);
-                    await message.reply(
-                        `✅ Berhasil nambahin album **${album.name}** (${newSongs.length} lagu).`
-                    );
+                    if (spotstreamActive) {
+                        const newSongs = tracks.map(track => ({
+                            title: track.name,
+                            artist: track.artists.map(a => a.name).join(', '),
+                            duration: Math.round(track.duration_ms / 1000),
+                            spotifyId: track.id,
+                            source: 'spotify',
+                            url: `https://open.spotify.com/track/${track.id}`,
+                            thumbnail: album.images?.[0]?.url || '',
+                            requestedBy: message.author.tag,
+                        }));
 
-                    if (wasEmpty && queue.songs.length > 0) {
-                        const first = queue.songs[0];
-                        const matchedFirst = await youtubeMatcher.matchSpotifyTrackToYoutube({
-                            title: first.title.split(' - ')[0],
-                            artist: first.artist,
-                            duration: first.duration,
-                            spotifyId: first.spotifyId,
-                        });
-                        if (matchedFirst) {
-                            first.videoId = matchedFirst.youtubeId;
-                            first.url = `https://www.youtube.com/watch?v=${matchedFirst.youtubeId}`;
-                            first.isResolved = true;
+                        queue.songs.push(...newSongs);
+                        await message.reply(
+                            `✅ Berhasil nambahin album Spotify **${album.name}** (${newSongs.length} lagu, 🟢 Spotify Direct 320kbps).`
+                        );
+                        if (wasEmpty) playNext(guildId);
+                        return;
+                    } else {
+                        // Legacy lazy YouTube resolve
+                        const newSongs = tracks.map(track => ({
+                            title: `${track.name} - ${track.artists[0]?.name || ''}`,
+                            artist: track.artists[0]?.name || '',
+                            duration: Math.round(track.duration_ms / 1000),
+                            spotifyId: track.id,
+                            videoId: null,
+                            url: null,
+                            isResolved: false,
+                            requestedBy: message.author.tag,
+                        }));
+
+                        queue.songs.push(...newSongs);
+                        await message.reply(
+                            `✅ Berhasil nambahin album **${album.name}** (${newSongs.length} lagu).`
+                        );
+
+                        if (wasEmpty && queue.songs.length > 0) {
+                            const first = queue.songs[0];
+                            const matchedFirst = await youtubeMatcher.matchSpotifyTrackToYoutube({
+                                title: first.title.split(' - ')[0],
+                                artist: first.artist,
+                                duration: first.duration,
+                                spotifyId: first.spotifyId,
+                            });
+                            if (matchedFirst) {
+                                first.videoId = matchedFirst.youtubeId;
+                                first.url = `https://www.youtube.com/watch?v=${matchedFirst.youtubeId}`;
+                                first.isResolved = true;
+                            }
+                            playNext(guildId);
                         }
-                        playNext(guildId);
+                        return;
                     }
-
-                    return;
                 }
 
             } catch (err) {

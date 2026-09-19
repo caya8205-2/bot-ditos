@@ -61,10 +61,14 @@ function generateMusicEmbed(guildId) { // Embed music player premium
         ? `\n👤 **Requested by:** ${track.requestedBy}`
         : "";
 
-    return new EmbedBuilder()
+    const isSpotifyDirect = track.source === 'spotify' || (track.spotifyId && !track.videoId);
+    const sourceBadge = isSpotifyDirect ? '🟢 **Spotify Direct (320kbps)**\n' : '';
+
+    const embed = new EmbedBuilder()
         .setTitle("🎧 Ditos Music Player")
         .setDescription(
             `**Sedang diputar**\n` +
+            sourceBadge +
             `▶ **${track.title}**\n` +
             `${track.url || ""}\n\n` +
             requestedByLine
@@ -86,7 +90,13 @@ function generateMusicEmbed(guildId) { // Embed music player premium
                 inline: false,
             },
         )
-        .setColor("#1DB954");
+        .setColor(isSpotifyDirect ? "#1DB954" : "#FF0000");
+
+    if (track.thumbnail) {
+        embed.setThumbnail(track.thumbnail);
+    }
+
+    return embed;
 }
 
 function getMusicButtons(guildId) { // Tombol

@@ -3,7 +3,8 @@
 [![Discord.js](https://img.shields.io/badge/Discord.js-v14-5865F2)](https://discord.js.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-24-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-Local-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![youtubei.js](https://img.shields.io/badge/youtubei.js-Innertube-FF0000?logo=youtube&logoColor=white)](https://github.com/LuanRT/YouTube.js)
+[![innertube-rs](https://img.shields.io/badge/innertube--rs-Rust-DEA584?logo=rust&logoColor=white)](https://github.com/caya8205-2/innertube-rs)
+[![spotstream](https://img.shields.io/badge/spotstream-Spotify%20Direct-1DB954?logo=spotify&logoColor=white)](https://github.com/caya8205-2/spotstream)
 [![FFmpeg](https://img.shields.io/badge/FFmpeg-Audio-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![MIT](https://img.shields.io/badge/License-MIT-white)](./LICENSE)
 
@@ -31,12 +32,13 @@ Kalau mau clone dan gak sreg sama personality-nya, tinggal ubah System Prompt di
 - **LLM Stack**: Local LLM (KoboldCpp) → 9router → Groq sebagai fallback bertingkat. Auto-switch kalau salah satu down
 
 ### 🎵 Music Player
-- **Resolver**: `youtubei.js` (Innertube API) sebagai primary, `yt-dlp-exec` sebagai fallback
-- **Spotify → YouTube Matcher**: Scoring system dengan 40+ keyword filter (official/reaction/cover/live detection), multi-query fallback, duration matching
+- **Direct Spotify Player**: Stream audio 320kbps instan langsung dari CDN Spotify via binary native `spotstream` (Vorbis PCM pipe, support personalized Daily Mix / Made for You)
+- **Resolver**: `innertube-rs` CLI binary adapter sebagai primary YouTube resolver, `yt-dlp` sebagai fallback
+- **Spotify → YouTube Fallback**: Scoring system dengan 40+ keyword filter (official/reaction/cover/live detection) jika spotstream tidak aktif
 - **Prefetch**: Stream URL lagu ke-2 dan ke-3 di-resolve di background sebelum giliran main → ganti lagu instant
 - **Cache**: SQLite dual-index — hit by query string atau video ID langsung, URL TTL 6 jam
-- **Source**: YouTube search, YouTube URL, YouTube playlist, Spotify track/playlist/album
-- **Kontrol**: Tombol interaktif Play/Pause/Skip/Stop/Leave
+- **Source**: Spotify track/playlist/album (Direct), YouTube search, YouTube URL, YouTube playlist
+- **Kontrol**: Tombol interaktif Play/Pause/Skip/Stop/Seek/Prev/Leave
 
 ### 🎮 Fun & Games
 - **Trivia**: `d!trivia` + `d!quizscore` — leaderboard antar member
@@ -61,7 +63,8 @@ bot-ditos/
 │   ├── handlers/       # Auto-loader untuk commands & events
 │   ├── utils/          # Core logic — AI, music, DB, voice, UI
 │   │   ├── db.js              # SQLite singleton + schema + auto-migration
-│   │   ├── youtubeResolver.js # Primary resolver via youtubei.js
+│   │   ├── spotifyResolver.js # Spotify direct adapter via spotstream CLI
+│   │   ├── youtubeResolver.js # Primary YouTube resolver via innertube-rs CLI
 │   │   ├── youtubeMatcher.js  # Spotify→YouTube scoring system
 │   │   ├── prefetchManager.js # Background prefetch untuk instant playback
 │   │   ├── musicCache.js      # SQLite cache (audio URL + metadata)

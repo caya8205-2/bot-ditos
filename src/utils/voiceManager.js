@@ -18,6 +18,7 @@ const { SOUNDBOARD_CLIPS } = require('../data/constants');
 const { GTTS_PATH, TEMP_DIR } = require('../config');
 const { generateMusicEmbed, getMusicButtons } = require('./uiHelpers');
 const youtubeResolver = require('./youtubeResolver');
+const spotifyResolver = require('./spotifyResolver');
 const musicCache = require('./musicCache');
 const { getPrefetched, consumePrefetch, schedulePrefetch } = require('./prefetchManager');
 
@@ -132,8 +133,8 @@ async function playNext(guildId) {
 
     let song = queue.songs[0];
 
-    // Resolve videoId jika belum ada (lazy Spotify tracks)
-    if (!song.videoId) {
+    // Resolve videoId jika belum ada (lazy legacy Spotify tracks yang bukan direct stream)
+    if (song.source !== 'spotify' && !song.videoId) {
         if (song.isResolving) {
             console.log(`[Music] JIT: masih resolving ${song.title}...`);
         }
@@ -149,11 +150,45 @@ async function playNext(guildId) {
 
     queue.nowPlaying = song;
 
+    if (queue.currentStreamSource) {
+        try { queue.currentStreamSource.kill(); } catch {}
+        queue.currentStreamSource = null;
+    }
+
     try {
+        const isSpotifyDirect = song.source === 'spotify' || (song.spotifyId && !song.videoId);
         const isLocalCache = song.videoId && hasAudioCache(song.videoId);
         let child;
 
-        if (isLocalCache) {
+        if (isSpotifyDirect) {
+            console.log(`[Music] Direct Spotify streaming via spotstream: ${song.title} (${song.spotifyId})`);
+            const ffmpegArgs = [
+                '-f', 's16le',
+                '-ar', '44100',
+                '-ac', '2',
+                '-i', 'pipe:0',
+                '-loglevel', 'warning',
+                '-c:a', 'libopus',
+                '-b:a', '128k',
+                '-vbr', 'on',
+                '-f', 'ogg',
+                '-ar', '48000',
+                '-ac', '2',
+                'pipe:1',
+            ];
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stdin.on('error', () => {});
+
+            const spotProc = spotifyResolver.spawnSpotifyStream(song.spotifyId);
+            spotProc.stdout.pipe(child.stdin);
+            spotProc.stdout.on('error', () => {});
+            spotProc.on('error', (err) => {
+                console.error('[Music] spotstream child error:', err.message);
+                try { child.stdin.destroy(); } catch {}
+            });
+
+            queue.currentStreamSource = spotProc;
+        } else if (isLocalCache) {
             console.log(`[Music] Local Audio Cache HIT: ${song.title}`);
             const ffmpegArgs = [
                 '-i', getAudioFilePath(song.videoId),
@@ -164,27 +199,12 @@ async function playNext(guildId) {
             ];
             child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
         } else {
-            const streamUrl = await getStreamUrl(song);
-            song.streamUrl = streamUrl;
-
-            // Fetch via Node HTTP client to avoid YouTube 403 blocks on FFmpeg
-            let res = await fetch(streamUrl, { headers: { Range: 'bytes=0-' } });
-            if (!res.ok) {
-                // Auto-recovery: Jika URL kedaluwarsa/403, resolve ulang fresh
-                console.warn(`[Music] Fetch status ${res.status}, re-resolving fresh URL: ${song.title}`);
-                const freshAudio = await youtubeResolver.resolveAudioUrl(song.videoId);
-                song.streamUrl = freshAudio.url;
-                musicCache.refreshTrackUrl(song.videoId, freshAudio.url);
-                res = await fetch(freshAudio.url, { headers: { Range: 'bytes=0-' } });
-                if (!res.ok) {
-                    throw new Error(`Fetch audio stream failed with status ${res.status}`);
-                }
-            }
-
             const ffmpegArgs = [
                 '-i', 'pipe:0',
                 '-loglevel', 'warning',
                 '-c:a', 'libopus',
+                '-b:a', '128k',
+                '-vbr', 'on',
                 '-f', 'ogg',
                 '-ar', '48000',
                 '-ac', '2',
@@ -193,12 +213,54 @@ async function playNext(guildId) {
             child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
             child.stdin.on('error', () => {});
 
-            const bodyStream = Readable.fromWeb(res.body);
-            bodyStream.pipe(child.stdin);
-            bodyStream.on('error', (err) => {
-                console.warn('[Music] Body stream error:', err.message);
-                try { child.stdin.destroy(); } catch {}
-            });
+            let piped = false;
+            try {
+                const streamUrl = await getStreamUrl(song);
+                song.streamUrl = streamUrl;
+
+                const headers = {
+                    'User-Agent': 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X; US)',
+                    'Origin': 'https://www.youtube.com',
+                    'Referer': 'https://www.youtube.com',
+                };
+
+                const res = await fetch(streamUrl, { headers: { ...headers, Range: 'bytes=0-1048576' } });
+                if (res.ok) {
+                    const fullRes = await fetch(streamUrl, { headers });
+                    if (fullRes.ok) {
+                        const bodyStream = Readable.fromWeb(fullRes.body);
+                        bodyStream.pipe(child.stdin);
+                        bodyStream.on('error', (err) => {
+                            console.warn('[Music] Body stream error:', err.message);
+                            try { child.stdin.destroy(); } catch {}
+                        });
+                        piped = true;
+                    }
+                }
+            } catch (err) {
+                console.warn(`[Music] Innertube stream error for ${song.title}:`, err.message);
+            }
+
+            if (!piped) {
+                // Fallback otomatis ke yt-dlp jika Innertube 403 / diblokir
+                console.log(`[Music] Streaming via yt-dlp fallback: ${song.title}`);
+                const videoUrl = song.url || `https://www.youtube.com/watch?v=${song.videoId}`;
+                const ytProc = spawn('yt-dlp', [
+                    '-o', '-',
+                    '-f', 'bestaudio/18/best',
+                    '--extractor-args', 'youtube:player_client=android',
+                    '--no-playlist',
+                    '--quiet',
+                    videoUrl
+                ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+                ytProc.stdout.pipe(child.stdin);
+                ytProc.stdout.on('error', () => {});
+                ytProc.on('error', (err) => {
+                    console.error('[Music] yt-dlp process error:', err.message);
+                    try { child.stdin.destroy(); } catch {}
+                });
+            }
         }
 
         child.on('error', (err) => {
@@ -212,6 +274,13 @@ async function playNext(guildId) {
         child.stderr.on('data', (data) => {
             const msg = data.toString().trim();
             if (msg) console.warn(`[FFmpeg] ${msg}`);
+        });
+
+        child.on('close', () => {
+            if (queue.currentStreamSource) {
+                try { queue.currentStreamSource.kill(); } catch {}
+                queue.currentStreamSource = null;
+            }
         });
 
         // Simpan ke local disk cache secara atomic (hanya jika lagu selesai 100% tanpa di-stop/skip di tengah)
@@ -281,13 +350,42 @@ async function seekAudio(guildId, targetSeconds) {
     const queue = musicQueues.get(guildId);
     if (!queue || !queue.nowPlaying) return false;
 
+    if (queue.currentStreamSource) {
+        try { queue.currentStreamSource.kill(); } catch {}
+        queue.currentStreamSource = null;
+    }
+
     try {
         const song = queue.nowPlaying;
         const safeSeek = Math.max(0, Math.floor(targetSeconds));
+        const isSpotifyDirect = song.source === 'spotify' || (song.spotifyId && !song.videoId);
         const isLocalCache = song.videoId && hasAudioCache(song.videoId);
         let child;
 
-        if (isLocalCache) {
+        if (isSpotifyDirect) {
+            const ffmpegArgs = [
+                '-f', 's16le',
+                '-ar', '44100',
+                '-ac', '2',
+                '-i', 'pipe:0',
+                '-ss', String(safeSeek),
+                '-loglevel', 'warning',
+                '-c:a', 'libopus',
+                '-b:a', '128k',
+                '-vbr', 'on',
+                '-f', 'ogg',
+                '-ar', '48000',
+                '-ac', '2',
+                'pipe:1',
+            ];
+            child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+            child.stdin.on('error', () => {});
+
+            const spotProc = spotifyResolver.spawnSpotifyStream(song.spotifyId);
+            spotProc.stdout.pipe(child.stdin);
+            spotProc.stdout.on('error', () => {});
+            queue.currentStreamSource = spotProc;
+        } else if (isLocalCache) {
             const ffmpegArgs = [
                 '-ss', String(safeSeek),
                 '-i', getAudioFilePath(song.videoId),
@@ -299,13 +397,18 @@ async function seekAudio(guildId, targetSeconds) {
             child = spawn(ffmpegPath, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
         } else {
             const streamUrl = song.streamUrl || await getStreamUrl(song);
-            let res = await fetch(streamUrl, { headers: { Range: 'bytes=0-' } });
+            const headers = {
+                'User-Agent': 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X; US)',
+                'Origin': 'https://www.youtube.com',
+                'Referer': 'https://www.youtube.com',
+            };
+            let res = await fetch(streamUrl, { headers: { ...headers, Range: 'bytes=0-' } });
             if (!res.ok) {
                 console.warn(`[Music] Seek fetch status ${res.status}, re-resolving fresh URL: ${song.title}`);
                 const freshAudio = await youtubeResolver.resolveAudioUrl(song.videoId);
                 song.streamUrl = freshAudio.url;
                 musicCache.refreshTrackUrl(song.videoId, freshAudio.url);
-                res = await fetch(freshAudio.url, { headers: { Range: 'bytes=0-' } });
+                res = await fetch(freshAudio.url, { headers: { ...headers, Range: 'bytes=0-' } });
                 if (!res.ok) {
                     throw new Error(`Fetch audio stream for seek failed: ${res.status}`);
                 }
@@ -316,6 +419,8 @@ async function seekAudio(guildId, targetSeconds) {
                 '-i', 'pipe:0',
                 '-loglevel', 'warning',
                 '-c:a', 'libopus',
+                '-b:a', '128k',
+                '-vbr', 'on',
                 '-f', 'ogg',
                 '-ar', '48000',
                 '-ac', '2',

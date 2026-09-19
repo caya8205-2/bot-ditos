@@ -1,41 +1,49 @@
 'use strict';
 
-// Primary YouTube resolver menggunakan youtubei.js (Innertube API).
-// Port dari Noctune backend/src/services/youtubei.ts, diadaptasi ke CommonJS.
-// - Primary resolver: Innertube (no subprocess, no scraping)
-// - Multi-client fallback: ANDROID → IOS → WEB → MWEB → TV_SIMPLY → ANDROID_VR
+/**
+ * YouTube resolver menggunakan innertube-rs CLI adapter binary.
+ * Menghilangkan warning parser JS dan deciphering bottleneck dengan memanfaatkan
+ * binary Rust native (innertube.exe).
+ */
 
-const { Innertube, Platform } = require('youtubei.js');
+const { execFile } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
-const YOUTUBEI_CLIENTS = ['ANDROID_VR', 'IOS', 'TV_SIMPLY', 'MWEB', 'ANDROID', 'WEB'];
+// Path resolver ke innertube CLI
+function getInnertubeBinary() {
+    // 1. Env override
+    if (process.env.INNERTUBE_BIN && fs.existsSync(process.env.INNERTUBE_BIN)) {
+        return process.env.INNERTUBE_BIN;
+    }
+    // 2. Local appdata avpull path
+    const localAppData = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Local') : '');
+    const avpullBin = path.join(localAppData, 'avpull', 'innertube.exe');
+    if (fs.existsSync(avpullBin)) {
+        return avpullBin;
+    }
+    // 3. Fallback ke PATH command
+    return 'innertube';
+}
+
 const URL_EXPIRY_MS = (5 * 60 + 45) * 60 * 1000; // 5h45m — conservative YT URL expiry
 
-let innertubePromise = null;
-
-async function getInnertube() {
-    if (!innertubePromise) {
-        // Setup JavaScript evaluator required for deciphering URL obfuscation
-        Platform.shim.eval = async (arg) => {
-            if (typeof arg === 'string') {
-                try {
-                    return new Function(`return (${arg})`)();
-                } catch {
-                    return new Function(arg)();
-                }
+function runInnertubeCli(args, options = {}) {
+    return new Promise((resolve, reject) => {
+        const bin = getInnertubeBinary();
+        execFile(bin, args, { maxBuffer: 10 * 1024 * 1024, timeout: options.timeout || 30000 }, (error, stdout, stderr) => {
+            if (error) {
+                const errOut = stderr ? stderr.trim() : error.message;
+                return reject(new Error(`innertube-rs error: ${errOut}`));
             }
-            if (typeof arg === 'object' && arg !== null) {
-                const code = arg.output || arg.code;
-                if (code) {
-                    const fn = new Function(code);
-                    return fn();
-                }
+            try {
+                const parsed = JSON.parse(stdout.trim());
+                resolve(parsed);
+            } catch (err) {
+                reject(new Error(`Failed to parse innertube-rs output: ${err.message}. Raw: ${stdout.slice(0, 100)}`));
             }
-            return eval(arg);
-        };
-
-        innertubePromise = Innertube.create();
-    }
-    return innertubePromise;
+        });
+    });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -63,101 +71,15 @@ function extractPlaylistId(url) {
     }
 }
 
-function pickThumbnail(thumbnails) {
-    if (!thumbnails?.length) return '';
-    const sorted = [...thumbnails].sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
-    const medium = sorted.find(t => (t.width ?? 0) <= 480);
-    return medium?.url ?? sorted[0]?.url ?? '';
-}
-
 function isYoutubeVideoId(id) {
     return /^[a-zA-Z0-9_-]{11}$/.test(id);
 }
 
-function toTrack(video, query) {
-    const id = video.video_id ?? video.id;
-    if (!id || !isYoutubeVideoId(id)) return null;
-
-    return {
-        id,
-        title: video.title?.toString?.() ?? video.title?.text ?? id,
-        artist: video.author?.name ?? video.author ?? 'Unknown',
-        duration: video.duration?.seconds ?? 0,
-        thumbnail: video.best_thumbnail?.url ?? pickThumbnail(video.thumbnails),
-        query,
-    };
-}
-
-function trackFromInfo(info, originalQuery) {
-    const basic = info.basic_info ?? {};
-    const id = basic.id ?? extractVideoId(originalQuery);
-    return {
-        id,
-        title: basic.title ?? id,
-        artist: basic.author ?? basic.channel?.name ?? 'Unknown',
-        duration: basic.duration ?? 0,
-        thumbnail: pickThumbnail(basic.thumbnail),
-        query: originalQuery,
-    };
-}
-
-// ─── Multi-client fallback helpers ────────────────────────────────────────────
-
-async function getBasicInfoWithFallback(videoId) {
-    const youtube = await getInnertube();
-    const failures = [];
-
-    for (const client of YOUTUBEI_CLIENTS) {
-        try {
-            const info = await youtube.getBasicInfo(videoId, { client });
-            return { info, client };
-        } catch (err) {
-            failures.push(`${client}: ${err.message}`);
-        }
-    }
-
-    throw new Error(`No client could load metadata for ${videoId}. ${failures.join(' | ')}`);
-}
-
-async function getStreamingDataWithFallback(videoId) {
-    const youtube = await getInnertube();
-    const failures = [];
-
-    // Try native opus/best audio format first
-    const optionSets = [
-        { type: 'audio', quality: 'best', format: 'any' },
-        { type: 'audio', quality: 'best', format: 'mp4' },
-    ];
-
-    for (const client of YOUTUBEI_CLIENTS) {
-        for (const options of optionSets) {
-            try {
-                const format = await youtube.getStreamingData(videoId, {
-                    ...options,
-                    client,
-                });
-
-                if (!format.url) throw new Error('No playable URL returned');
-
-                // Skip limited iOS streams (known to fail)
-                if (isLimitedIosStream(format.url)) throw new Error('Skipping limited iOS stream');
-
-                return { format: { ...format, url: format.url }, client };
-            } catch (err) {
-                failures.push(`${client}/${options.format}: ${err.message}`);
-            }
-        }
-    }
-
-    throw new Error(`No client could resolve audio for ${videoId}. ${failures.join(' | ')}`);
-}
-
-function isLimitedIosStream(url) {
-    try {
-        return new URL(url).searchParams.get('c')?.toUpperCase() === 'IOS';
-    } catch {
-        return url.includes('c=IOS');
-    }
+function parseAudioFormat(mimeType) {
+    const mime = (mimeType ?? '').toLowerCase();
+    if (mime.includes('mp4') || mime.includes('m4a')) return 'm4a';
+    if (mime.includes('webm')) return 'webm';
+    return 'audio';
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -166,58 +88,78 @@ function isLimitedIosStream(url) {
  * Search YouTube and return up to `limit` track candidates.
  * @param {string} query
  * @param {number} limit
- * @returns {Promise<Track[]>}
+ * @returns {Promise<Array<{ id: string, title: string, artist: string, duration: number, thumbnail: string, query: string }>>}
  */
 async function searchTracks(query, limit = 10) {
-    const youtube = await getInnertube();
-    const search = await youtube.search(query);
-    const results = Array.from(search.results ?? []);
+    try {
+        const results = await runInnertubeCli(['search', query, '--limit', String(limit)]);
+        if (!Array.isArray(results)) return [];
 
-    const tracks = results
-        .map(result => toTrack(result, query))
-        .filter(Boolean)
-        .slice(0, limit);
+        const tracks = results.map(t => ({
+            id: t.id,
+            title: t.title || t.id,
+            artist: t.artist || 'Unknown',
+            duration: Number(t.duration) || 0,
+            thumbnail: t.thumbnail || '',
+            query,
+        })).filter(t => isYoutubeVideoId(t.id));
 
-    console.log(`[youtubeResolver:search] "${query}" → ${tracks.length} results`);
-    return tracks;
+        console.log(`[youtubeResolver:search] "${query}" → ${tracks.length} results`);
+        return tracks;
+    } catch (err) {
+        console.error(`[youtubeResolver:search] failed for "${query}":`, err.message);
+        return [];
+    }
 }
 
 /**
  * Get track metadata for a YouTube URL or video ID.
  * @param {string} urlOrVideoId
  * @param {string} [originalQuery]
- * @returns {Promise<Track>}
+ * @returns {Promise<{ id: string, title: string, artist: string, duration: number, thumbnail: string, query: string }>}
  */
 async function getYoutubeTrack(urlOrVideoId, originalQuery = urlOrVideoId) {
     const videoId = extractVideoId(urlOrVideoId);
-    const { info } = await getBasicInfoWithFallback(videoId);
-    return trackFromInfo(info, originalQuery);
+    const data = await runInnertubeCli(['info', videoId]);
+    const details = data.videoDetails || {};
+
+    let thumb = '';
+    if (details.thumbnail && details.thumbnail.thumbnails && details.thumbnail.thumbnails.length > 0) {
+        const sorted = [...details.thumbnail.thumbnails].sort((a, b) => (b.width || 0) - (a.width || 0));
+        thumb = sorted[0].url || '';
+    }
+
+    return {
+        id: details.videoId || videoId,
+        title: details.title || videoId,
+        artist: details.author || 'Unknown',
+        duration: Number(details.lengthSeconds) || 0,
+        thumbnail: thumb,
+        query: originalQuery,
+    };
 }
 
 /**
  * Get all tracks from a YouTube playlist URL.
  * @param {string} url
  * @param {number} limit
- * @returns {Promise<{ name: string, tracks: Track[] }>}
+ * @returns {Promise<{ name: string, tracks: Array<{ id: string, title: string, artist: string, duration: number, thumbnail: string, query: string }> }>}
  */
 async function getYoutubePlaylistTracks(url, limit = 100) {
-    const youtube = await getInnertube();
-    let playlist = await youtube.getPlaylist(extractPlaylistId(url));
-    const tracks = [];
+    const playlistId = extractPlaylistId(url);
+    const data = await runInnertubeCli(['playlist', playlistId, '--limit', String(limit)]);
 
-    while (tracks.length < limit) {
-        for (const item of Array.from(playlist.items ?? [])) {
-            const track = toTrack(item, item.title?.toString?.() ?? url);
-            if (track) tracks.push(track);
-            if (tracks.length >= limit) break;
-        }
-
-        if (tracks.length >= limit || !playlist.has_continuation) break;
-        playlist = await playlist.getContinuation();
-    }
+    const tracks = (data.tracks || []).map(t => ({
+        id: t.id,
+        title: t.title || t.id,
+        artist: t.artist || data.author || 'Unknown',
+        duration: Number(t.duration) || 0,
+        thumbnail: t.thumbnail || '',
+        query: url,
+    })).filter(t => isYoutubeVideoId(t.id));
 
     return {
-        name: playlist.info?.title ?? 'YouTube Playlist',
+        name: data.name || 'YouTube Playlist',
         tracks,
     };
 }
@@ -228,13 +170,16 @@ async function getYoutubePlaylistTracks(url, limit = 100) {
  * @returns {Promise<{ videoId: string, url: string, expiry: number, format: string }>}
  */
 async function resolveAudioUrl(videoId) {
-    const { format } = await getStreamingDataWithFallback(videoId);
+    const stream = await runInnertubeCli(['stream', videoId]);
+    if (!stream || !stream.audio || !stream.audio.url) {
+        throw new Error(`No audio stream resolved for video ${videoId}`);
+    }
 
     return {
         videoId,
-        url: format.url,
+        url: stream.audio.url,
         expiry: Date.now() + URL_EXPIRY_MS,
-        format: parseAudioFormat(format.mime_type),
+        format: parseAudioFormat(stream.audio.mimeType),
     };
 }
 
@@ -242,25 +187,15 @@ async function resolveAudioUrl(videoId) {
  * Resolve track metadata + audio URL in one call.
  * @param {string} videoId
  * @param {string} originalQuery
- * @returns {Promise<{ track: Track, audio: AudioStreamInfo }>}
+ * @returns {Promise<{ track: object, audio: object }>}
  */
 async function resolveTrack(videoId, originalQuery) {
-    const [{ info }, audio] = await Promise.all([
-        getBasicInfoWithFallback(videoId),
+    const [track, audio] = await Promise.all([
+        getYoutubeTrack(videoId, originalQuery),
         resolveAudioUrl(videoId),
     ]);
 
-    return {
-        track: trackFromInfo(info, originalQuery),
-        audio,
-    };
-}
-
-function parseAudioFormat(mimeType) {
-    const mime = (mimeType ?? '').toLowerCase();
-    if (mime.includes('mp4') || mime.includes('m4a')) return 'm4a';
-    if (mime.includes('webm')) return 'webm';
-    return 'audio';
+    return { track, audio };
 }
 
 module.exports = {
