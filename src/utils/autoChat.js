@@ -1,4 +1,4 @@
-const { channelHistory, botActivityTracker } = require('../data/state');
+const { channelHistory, botActivityTracker, lastUserActivity } = require('../data/state');
 const state = require('../data/state');
 const { callLLMWithFallback, LLM_MODEL } = require('./llmManager');
 const { preparePromptMessages } = require('./promptBuilder');
@@ -6,7 +6,7 @@ const { preparePromptMessages } = require('./promptBuilder');
 function filterChannelHistory(messages) {
     return messages.filter(m => {
         const isBotMessage = m.username?.includes('Bot');
-        const isOurBot = m.username === 'Bot Ditos' || m.username === 'Bot Tia';
+        const isOurBot = m.username === 'Bot Ditos' || m.username === 'Bot Tia' || m.username === 'Kumarine';
         if (isBotMessage && !isOurBot) return false;
         if (/^\*.*\*$/.test(m.content?.trim())) return false;
         return true;
@@ -44,7 +44,9 @@ const AUTO_CHAT_CONFIG = {
     ],
 };
 
-function shouldBotReply(message) {
+function shouldBotReply(message, textContent) {
+    if (!AUTO_CHAT_CONFIG.enabled) return false;
+
     const channelId = message.channel.id;
 
     // Skip blacklist & cooldown
@@ -54,22 +56,30 @@ function shouldBotReply(message) {
 
     const lastActivity = botActivityTracker.get(channelId);
     if (lastActivity && Date.now() - lastActivity.lastMessage < AUTO_CHAT_CONFIG.replyCooldown) {
+        const remaining = Math.ceil((AUTO_CHAT_CONFIG.replyCooldown - (Date.now() - lastActivity.lastMessage)) / 1000);
+        console.log(`[AutoChat] [${message.channel.name || channelId}] Skip: cooldown aktif (${remaining}s tersisa)`);
         return false;
     }
 
+    const content = (textContent || message.content || '').toLowerCase();
+    const matchedTriggers = AUTO_CHAT_CONFIG.triggerKeywords.filter(kw => content.includes(kw.toLowerCase()));
+    const hasTrigger = matchedTriggers.length > 0;
+    const hasMention = Boolean(message.mentions?.has?.(message.client.user.id));
+
     const activity = botActivityTracker.get(channelId) || { messageCount: 0 };
-    if (activity.messageCount < AUTO_CHAT_CONFIG.minMessagesBetweenReplies) {
+
+    // Kalau belum cukup pesan dan tidak ada trigger/mention khusus, skip
+    if (!hasTrigger && !hasMention && activity.messageCount < AUTO_CHAT_CONFIG.minMessagesBetweenReplies) {
+        console.log(`[AutoChat] [${message.channel.name || channelId}] Skip: pesan baru ${activity.messageCount}/${AUTO_CHAT_CONFIG.minMessagesBetweenReplies} (belum ada trigger/mention)`);
         return false;
     }
 
     let chance = AUTO_CHAT_CONFIG.replyChance;
-    const content = message.content.toLowerCase();
-    const hasTrigger = AUTO_CHAT_CONFIG.triggerKeywords.some(kw => content.includes(kw.toLowerCase()));
     if (hasTrigger) {
         chance = Math.min(chance * 2.5, 80);
     }
 
-    if (message.mentions.has(message.client.user.id)) {
+    if (hasMention) {
         chance = 90;
     }
 
@@ -90,11 +100,16 @@ function shouldBotReply(message) {
     else if (consecutiveCount >= 3) chance = Math.max(chance * 0.8, 8);
 
     const roll = Math.random() * 100;
-    return roll < chance;
+    const willReply = roll < chance;
+
+    console.log(`[AutoChat] [${message.channel.name || channelId}] MsgCount: ${activity.messageCount} | Triggers: ${hasTrigger ? matchedTriggers.join(', ') : 'none'} | Mention: ${hasMention} | Chance: ${chance.toFixed(1)}% | Roll: ${roll.toFixed(1)}% | Reply: ${willReply ? 'YES' : 'NO'}`);
+
+    return willReply;
 }
 
-async function generateAutoReply(message) {
+async function generateAutoReply(message, textContent) {
     const channelId = message.channel.id;
+    const userText = textContent || message.content || '';
 
     try {
         const now = new Date();
@@ -173,11 +188,11 @@ async function generateAutoReply(message) {
                     },
                     {
                         role: 'user',
-                        content: `Ini pesan terbaru dari ${message.author.username}:\n"${message.content}"\n\nReply secara natural dan singkat.`
+                        content: `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`
                     }
                 ], { label: 'auto-chat' }),
                 temperature: 0.85,
-                max_tokens: 150
+                max_tokens: 600
             });
         });
 
@@ -190,4 +205,138 @@ async function generateAutoReply(message) {
         return null;
     }
 }
-module.exports = { shouldBotReply, generateAutoReply, AUTO_CHAT_CONFIG };
+
+async function sendIdleMessage(channel) {
+    try {
+        const now = new Date();
+        const localTime = now.toLocaleDateString("id-ID", {
+            day: "numeric",
+            month: "long",
+            year: "numeric"
+        }) + " " + now.toLocaleTimeString("id-ID");
+
+        const chHistory = channelHistory.get(channel.id) || [];
+        const recentMessages = filterChannelHistory(chHistory).slice(-8);
+
+        const contextPrompt = recentMessages.length > 0
+            ? recentMessages
+                .map((m) => `${m.username}: ${m.content}`)
+                .join("\n")
+            : "Belum ada obrolan sebelumnya.";
+
+        const completion = await callLLMWithFallback(async (client) => {
+            return await client.chat.completions.create({
+                model: LLM_MODEL,
+                messages: preparePromptMessages([
+                    {
+                        role: 'system',
+                        content:
+                            "Waktu sekarang (dari PC user): " + localTime + "\n" +
+                            "Kamu boleh sesekali memakai emoji custom server ini sebagai reaksi (jangan berlebihan, biasanya maksimal 1 emoji per pesan):\n" +
+                            "- <:bwakakak3:1402586205669036063> → menertawakan orang lain secara bercanda (playful mockery).\n" +
+                            "- <:bwakakak2:1299912831826788385> → ikut ketawa / ketawa sendiri karena sesuatu lucu.\n" +
+                            "- <:acumalaka:1119639601099841689> → tertawa terbahak-bahak karena sangat lucu.\n" +
+                            "- <:oranghitamnangis:1398551165872115712> → reaksi diolok-olok bercanda / deadpan cry yang lucu.\n" +
+                            "- <:hebat:1292785452339957790> → apresiasi, bangga, atau achievement.\n" +
+                            "- <:emotmarah:1299575975511851028> → marah atau kesel.\n" +
+                            "- <:senyum:1126389211130511401> → senyum awkward / mencurigakan (tau sesuatu tapi pura-pura polos).\n" +
+                            "- <:maubagaimanalagi:1119637920278642728> → pasrah / it is what it is.\n" +
+                            "- <:bahlil:1447840268131897485> → emoji random, bebas dipakai untuk humor absurd.\n" +
+                            "- <:maafkak:1296306397356621904> → minta maaf.\n" +
+                            "- <:xixixixi:1119669394822406264> → ketawa, penggunaannya mirip sama bwakakak2.\n" +
+                            "- <:kaget2:1410339724744200323> → kaget.\n" +
+                            "Gunakan emoji hanya sebagai reaksi pendukung, bukan di setiap kalimat, dan hindari emoji saat menjelaskan hal teknis serius.\n\n" +
+
+                            "Kamu adalah Bot Ditos, bot Discord yang suka ikut ngobrol secara natural di server.\n" +
+                            "Gaya bicara santai, casual, campur Indonesia + English dikit.\n" +
+                            "Nada kamu moody, suka nyeletuk, kadang nyolot halus.\n\n" +
+
+                            "PENTING - ATURAN IDLE CHAT:\n" +
+                            "- Channel ini lagi sepi banget (20+ menit gak ada yang chat).\n" +
+                            "- Tugas kamu: Bikin 1 pesan singkat (1-2 kalimat) buat 'nyentil' user supaya ngobrol lagi.\n" +
+                            "- Boleh nanya random, nyeletuk soal topik obrolan terakhir, atau nge-roast karena server sepi kayak kuburan.\n" +
+                            "- Jangan nanya 'ada yang butuh bantuan?' atau 'ada orang gak?'. Buat senatural mungkin.\n" +
+                            "- Keep it SHORT (1-2 kalimat max).\n\n" +
+
+                            "Style:\n" +
+                            "- Pake 'gue/gua/gwa' dan 'lo/lu/luwh'\n" +
+                            "- Sesekali frontal ('bjirlah', 'anjeng', 'goofy ahh') tapi jangan berlebihan\n" +
+                            "- Boleh nge-roast dikit, tapi jangan toxic\n\n" +
+
+                            `Context obrolan terakhir:\n${contextPrompt}`
+                    },
+                    {
+                        role: 'user',
+                        content: 'Bikin pesan idle chat yang natural dan engaging!'
+                    }
+                ], { label: 'idle-chat' }),
+                temperature: 0.9,
+                max_tokens: 400
+            });
+        });
+
+        const idleMessage = completion.choices?.[0]?.message?.content?.trim();
+
+        if (!idleMessage || idleMessage.length < 3) {
+            const fallbacks = [
+                "Sepi amat nih...",
+                "Halo? Ada orang? 🦗",
+                "Lagi pada ngapain sih?",
+                "Kuburan mode on <:senyum:1126389211130511401>"
+            ];
+            await channel.send(fallbacks[Math.floor(Math.random() * fallbacks.length)]).catch(() => {});
+        } else {
+            await channel.send(idleMessage).catch(() => {});
+        }
+
+        botActivityTracker.set(channel.id, {
+            lastMessage: Date.now(),
+            messageCount: 0
+        });
+
+        console.log(`[IdleChat] Sent message to ${channel.name || channel.id}`);
+
+    } catch (error) {
+        console.error('[IdleChat] Error:', error);
+        const fallbacks = ["Sepi amat nih...", "Boring banget gak ada yang ngobrol"];
+        await channel.send(fallbacks[Math.floor(Math.random() * fallbacks.length)]).catch(() => {});
+    }
+}
+
+function startIdleChecker(client) {
+    setInterval(async () => {
+        if (!AUTO_CHAT_CONFIG.enabled || !AUTO_CHAT_CONFIG.idleChat.enabled) return;
+
+        const now = Date.now();
+
+        for (const [channelId, lastActivity] of lastUserActivity) {
+            const idleTime = now - lastActivity;
+
+            if (idleTime < AUTO_CHAT_CONFIG.idleChat.minIdleTime) continue;
+
+            const maxIdle = AUTO_CHAT_CONFIG.idleChat.maxIdleTime;
+            const idlePercent = Math.min(idleTime / maxIdle, 1);
+            const chance = idlePercent * 30; // Max 30% chance
+
+            if (Math.random() * 100 > chance) continue;
+
+            try {
+                const channel = await client.channels.fetch(channelId).catch(() => null);
+
+                if (!channel || !channel.isTextBased()) continue;
+                if (AUTO_CHAT_CONFIG.blacklistedChannels.includes(channelId)) continue;
+
+                const lastBot = botActivityTracker.get(channelId);
+                if (lastBot && now - lastBot.lastMessage < 30 * 60 * 1000) continue;
+
+                await sendIdleMessage(channel);
+                lastUserActivity.set(channelId, now);
+
+            } catch (error) {
+                console.error('[IdleChecker] Error:', error);
+            }
+        }
+    }, 5 * 60 * 1000);
+}
+
+module.exports = { shouldBotReply, generateAutoReply, sendIdleMessage, startIdleChecker, AUTO_CHAT_CONFIG };

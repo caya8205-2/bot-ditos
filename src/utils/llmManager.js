@@ -57,6 +57,37 @@ function markLocalUnavailable(error) {
     );
 }
 
+function isConnectivityError(error) {
+    if (!error) return false;
+    const msg = (error.message || '').toLowerCase();
+    const code = error.code || error.cause?.code;
+    const status = error.status || error.statusCode || error.cause?.status;
+
+    if (code && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) {
+        return true;
+    }
+    if (status && (status >= 500 || status === 404)) {
+        return true;
+    }
+    if (msg.includes('econnrefused') || msg.includes('timeout') || msg.includes('network') || msg.includes('fetch failed')) {
+        return true;
+    }
+    return false;
+}
+
+function extractChoiceContent(result) {
+    const message = result?.choices?.[0]?.message;
+    if (!message) return '';
+    const content = message.content?.trim();
+    if (content) return content;
+    const reasoning = message.reasoning_content?.trim() || message.reasoning?.trim();
+    if (reasoning) {
+        message.content = reasoning;
+        return reasoning;
+    }
+    return '';
+}
+
 function markNinerUnavailable(error) {
     lastNinerError = error;
     ninerUnavailableUntil = Date.now() + NINER_FALLBACK_COOLDOWN_MS;
@@ -77,7 +108,8 @@ async function callGroqFallback(requestFn, options = {}) {
         { provider: 'groq', model: GROQ_FALLBACK_MODEL }
     ));
 
-    if (!result?.choices?.[0]?.message?.content?.trim()) {
+    const content = extractChoiceContent(result);
+    if (!content) {
         throw new Error('Groq returned empty response');
     }
 
@@ -96,14 +128,19 @@ async function callNinerFallback(requestFn, options = {}) {
             { provider: 'niner', model: NINER_MODEL }
         ));
 
-        if (!result?.choices?.[0]?.message?.content?.trim()) {
+        const content = extractChoiceContent(result);
+        if (!content) {
             throw new Error('Niner returned empty response');
         }
 
         lastNinerError = null;
         return result;
     } catch (ninerError) {
-        markNinerUnavailable(ninerError);
+        if (isConnectivityError(ninerError)) {
+            markNinerUnavailable(ninerError);
+        } else {
+            console.warn(`[LLM] Niner non-fatal error (${ninerError.message}), fallback to Groq without cooldown.`);
+        }
 
         try {
             return await callGroqFallback(requestFn, options);

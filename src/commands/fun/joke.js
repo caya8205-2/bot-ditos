@@ -20,7 +20,7 @@ module.exports = {
                         }
                     ],
                     temperature: 1.0,
-                    max_tokens: 100,
+                    max_tokens: 350,
                 });
             });
 

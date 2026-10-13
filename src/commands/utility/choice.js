@@ -65,7 +65,7 @@ module.exports = {
                         }
                     ],
                     temperature: 0.8,
-                    max_tokens: 150
+                    max_tokens: 450
                 });
             });
 

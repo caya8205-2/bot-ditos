@@ -7,6 +7,7 @@ module.exports = {
     aliases: ['ac'],
     async execute(message, args, client) {
         const action = args[0]?.toLowerCase();
+        const subAction = args[1]?.toLowerCase();
 
         if (!action || action === 'status') {
             const status = AUTO_CHAT_CONFIG.enabled ? '🟢 **ON**' : '🔴 **OFF**';
@@ -22,6 +23,7 @@ module.exports = {
                 `Commands:\n` +
                 `\`d!autochat on\` - Enable auto-chat\n` +
                 `\`d!autochat off\` - Disable auto-chat\n` +
+                `\`d!autochat idle [on|off]\` - Toggle idle chat saat sepi\n` +
                 `\`d!autochat config\` - Show detailed config`
             );
         }
@@ -40,6 +42,20 @@ module.exports = {
             return message.reply('🔴 Auto-chat **dimatikan**. Bot bakal diem aja kecuali dipanggil.');
         }
 
+        if (action === 'idle') {
+            if (subAction === 'on') {
+                AUTO_CHAT_CONFIG.idleChat.enabled = true;
+                return message.reply('✅ Idle-chat **diaktifkan**. Bot bakal nyentil kalau channel sepi!');
+            } else if (subAction === 'off') {
+                AUTO_CHAT_CONFIG.idleChat.enabled = false;
+                return message.reply('🔴 Idle-chat **dimatikan**.');
+            } else {
+                AUTO_CHAT_CONFIG.idleChat.enabled = !AUTO_CHAT_CONFIG.idleChat.enabled;
+                const status = AUTO_CHAT_CONFIG.idleChat.enabled ? 'diaktifkan' : 'dimatikan';
+                return message.reply(`ℹ️ Idle-chat sekarang **${status}**.`);
+            }
+        }
+
         if (action === 'config') {
             return message.reply(
                 `**⚙️ Auto-Chat Configuration**\n\n` +
@@ -47,6 +63,6 @@ module.exports = {
             );
         }
 
-        return message.reply('Usage: `d!autochat [on|off|status|config]`');
+        return message.reply('Usage: `d!autochat [on|off|idle [on|off]|status|config]`');
     },
 };

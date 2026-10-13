@@ -13,7 +13,7 @@ module.exports = {
     name: 'messageCreate',
     async execute(message, client) {
         const isBot = message.author.bot;
-        const isAllowedBot = message.author.username === 'Bot Ditos' || message.author.username === 'Bot Tia';
+        const isAllowedBot = message.author.username === 'Bot Ditos' || message.author.username === 'Kumarine' || message.author.id === '1446128162764230777';
 
         if (isBot && !isAllowedBot) {
             return;
@@ -30,9 +30,18 @@ module.exports = {
         const channelId = message.channel.id;
         lastUserActivity.set(channelId, Date.now());
 
+        if (!message.author.bot) {
+            const activity = botActivityTracker.get(channelId) || { messageCount: 0, lastMessage: 0 };
+            activity.messageCount++;
+            botActivityTracker.set(channelId, activity);
+        }
+
+        // Strip Discord reasoning subtext block (-# ...) jika ada di awal pesan
+        const cleanContent = (message.content || '').replace(new RegExp('^(\\s*-#[^\\n]*[\\r\\n]*)+', 'g'), '').trim();
+
         if (activeTrivia.has(channelId)) {
             const triviaData = activeTrivia.get(channelId);
-            const userAnswer = message.content.trim().toLowerCase();
+            const userAnswer = cleanContent.trim().toLowerCase();
             // [CHANGED] Gunakan fuzzy checker
             const isCorrect = isTriviaCorrect(userAnswer, triviaData.answer);
 
@@ -67,18 +76,18 @@ module.exports = {
             }
         }
 
-        if (!message.content.toLowerCase().startsWith('d!')) {
+        if (!cleanContent.toLowerCase().startsWith('d!')) {
             if (!message.author.bot || isAllowedBot) {
                 const role = message.author.bot ? 'assistant' : 'user';
-                saveToChannelHistory(channelId, message.content, message.author.username, role);
+                saveToChannelHistory(channelId, cleanContent, message.author.username, role);
             }
         }
 
-        if (message.author.bot) return;
+        if (message.author.bot && !isAllowedBot) return;
 
         const prefix = getPrefix(message.guild.id);
-        if (message.content.toLowerCase().startsWith(prefix)) {
-            const args = message.content.slice(prefix.length).trim().split(/ +/);
+        if (cleanContent.toLowerCase().startsWith(prefix)) {
+            const args = cleanContent.slice(prefix.length).trim().split(/ +/);
             const commandName = args.shift().toLowerCase();
 
             const command = client.commands.get(commandName) || client.commands.get(client.aliases.get(commandName));
@@ -96,8 +105,20 @@ module.exports = {
             }
         }
 
-        if (shouldBotReply(message)) {
-            await generateAutoReply(message);
+        if (shouldBotReply(message, cleanContent)) {
+            try {
+                const reply = await generateAutoReply(message, cleanContent);
+                if (reply) {
+                    await message.channel.send(reply);
+                    botActivityTracker.set(channelId, {
+                        lastMessage: Date.now(),
+                        messageCount: 0
+                    });
+                    saveToChannelHistory(channelId, reply, client.user.username, 'assistant');
+                }
+            } catch (err) {
+                console.error('[AutoChat] Gagal kirim auto-reply:', err);
+            }
         }
     },
 };

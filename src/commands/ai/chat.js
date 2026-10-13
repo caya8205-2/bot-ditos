@@ -10,7 +10,7 @@ const { OWNER_ID } = require('../../config');
 function filterChannelHistory(messages) {
     return messages.filter(m => {
         const isBotMessage = m.username?.includes('Bot');
-        const isOurBot = m.username === 'Bot Ditos' || m.username === 'Bot Tia';
+        const isOurBot = m.username === 'Bot Ditos' || m.username === 'Bot Tia' || m.username === 'Kumarine';
         if (isBotMessage && !isOurBot) return false;
         if (/^\*.*\*$/.test(m.content?.trim())) return false;
         return true;
