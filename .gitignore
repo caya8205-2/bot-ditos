@@ -1,4 +1,5 @@
 node_modules/
+.venv-bg-removal/
 .env
 # Local bot state (should not be committed)
 memory.json

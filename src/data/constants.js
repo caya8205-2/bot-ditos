@@ -45,6 +45,7 @@ const COMMAND_LIST = {
     'code/dev': 'Bantu ngoding',
     'eli5': 'Explain Like I\'m 5',
     'ocr': 'Extract text from image',
+    'removebg/mbg': 'Hapus background gambar yang dilampirkan',
     'gen': 'Generate image',
     'llmconfig': 'Lihat konfigurasi model lokal',
 };
