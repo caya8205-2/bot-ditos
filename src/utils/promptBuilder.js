@@ -1,11 +1,24 @@
 
 
+const botConfig = require('./botConfig');
+
 const DEFAULT_INPUT_TOKEN_BUDGET = 6000;
+
+/**
+ * Budget token dan metrik prompt dibaca dari config.yaml (local_llm.
+ * input_token_budget dan prompt_metrics.enabled), dengan env sebagai cadangan.
+ */
 const INPUT_TOKEN_BUDGET = Math.max(
     1000,
-    Number(process.env.LOCAL_LLM_INPUT_TOKEN_BUDGET) || DEFAULT_INPUT_TOKEN_BUDGET
+    botConfig.asNumber(
+        botConfig.getSection('local_llm', {}).input_token_budget,
+        Number(process.env.LOCAL_LLM_INPUT_TOKEN_BUDGET) || DEFAULT_INPUT_TOKEN_BUDGET
+    )
 );
-const PROMPT_METRICS_ENABLED = process.env.PROMPT_METRICS_ENABLED !== 'false';
+const PROMPT_METRICS_ENABLED = botConfig.asBool(
+    botConfig.getSection('prompt_metrics', {}).enabled,
+    process.env.PROMPT_METRICS_ENABLED !== 'false'
+);
 
 const EMOJI_GUIDE = `Emoji custom (maksimal satu per pesan dan hanya jika cocok):
 - <:bwakakak3:1402586205669036063>: menertawakan orang secara bercanda

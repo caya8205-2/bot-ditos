@@ -22,15 +22,31 @@ const {
 } = require('./ninerManager');
 const { isVisionSupported, isVideoSupported } = require('./visionHelper');
 
-const GROQ_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile';
+const botConfig = require('./botConfig');
+
+/**
+ * Konfigurasi dari config.yaml, dengan env sebagai cadangan supaya setup lama
+ * tetap jalan. Dibaca sebagai fungsi agar perubahan config langsung berlaku.
+ */
+function getGroqModel() {
+    const section = botConfig.getSection('groq', {});
+    return section.model || process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile';
+}
+
+function getCooldownConfig() {
+    const section = botConfig.getSection('cooldown', {});
+    return {
+        routerMs: Math.max(10000, botConfig.asNumber(section.router_ms, 60000)),
+        groqMs: Math.max(10000, botConfig.asNumber(section.groq_ms, 60000)),
+    };
+}
+
 const LOCAL_LLM_FALLBACK_COOLDOWN_MS = Math.max(
     10000,
     Number(process.env.LOCAL_LLM_FALLBACK_COOLDOWN_MS) || 5 * 60 * 1000
 );
-const NINER_FALLBACK_COOLDOWN_MS = Math.max(
-    10000,
-    Number(process.env.NINER_FALLBACK_COOLDOWN_MS || process.env['9ROUTER_FALLBACK_COOLDOWN_MS']) || 60 * 1000
-);
+const NINER_FALLBACK_COOLDOWN_MS = getCooldownConfig().routerMs;
+const GROQ_FALLBACK_MODEL = getGroqModel();
 
 let localUnavailableUntil = 0;
 let lastLocalError = null;
@@ -380,6 +396,8 @@ module.exports = {
     LLM_MODEL: LOCAL_LLM_MODEL,
     getNinerModel,
     getNinerFallbackModel,
+    getGroqModel,
+    getCooldownConfig,
     NINER_FALLBACK_COOLDOWN_MS,
     GROQ_FALLBACK_MODEL,
     LOCAL_LLM_FALLBACK_COOLDOWN_MS,

@@ -13,7 +13,15 @@
 
 const axios = require('axios');
 
-const CATALOG_TTL_MS = Number(process.env.MODEL_CATALOG_TTL_MS) || 30 * 60 * 1000;
+const CATALOG_TTL_MS = (() => {
+    try {
+        const botConfig = require('./botConfig');
+        const section = botConfig.getSection('model_catalog', { ttl_ms: 1800000 });
+        return botConfig.asNumber(section.ttl_ms, 1800000);
+    } catch {
+        return Number(process.env.MODEL_CATALOG_TTL_MS) || 30 * 60 * 1000;
+    }
+})();
 
 // Cache per base URL: { at, byId: Map<id, {vision, video}> }
 const catalogCache = new Map();
@@ -47,23 +55,61 @@ function normalizeBaseURL(url) {
  * Provider yang katalognya bisa dipakai untuk cek kapabilitas.
  * Mengembalikan daftar {baseURL, apiKey, label}.
  *
- * VISION_BASE_URL didahulukan karena vision manager generik memakainya
- * sebagai sumber utama; var lama tetap dibaca supaya konfigurasi yang sudah
- * ada tidak langsung rusak.
+ * Provider vision diambil dari config.yaml bagian `vision:`; provider utama
+ * dari `model.provider`. Variabel env lama tetap dibaca sebagai cadangan.
  */
 function getCatalogProviders() {
     const providers = [];
+    let botConfig = null;
+    try {
+        botConfig = require('./botConfig');
+    } catch {
+        // saat test terisolasi
+    }
+
+    const seen = new Set();
+
+    // Vision provider (untuk model video/gambar khusus).
+    if (botConfig) {
+        const { provider } = botConfig.getProviderForSection('vision');
+        if (provider?.base_url) {
+            const baseURL = normalizeBaseURL(provider.base_url);
+            seen.add(baseURL);
+            providers.push({ baseURL, apiKey: provider.apiKey, label: 'vision-provider' });
+        }
+    }
 
     const visionBase = normalizeBaseURL(readEnv(
         'VISION_BASE_URL', 'VISION_PROVIDER_BASE_URL', 'ZENMUX_BASE_URL'
     ));
-    const visionKey = readEnv('VISION_API_KEY', 'VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY');
-    if (visionBase) providers.push({ baseURL: visionBase, apiKey: visionKey, label: 'vision-provider' });
+    if (visionBase && !seen.has(visionBase)) {
+        seen.add(visionBase);
+        providers.push({
+            baseURL: visionBase,
+            apiKey: readEnv('VISION_API_KEY', 'VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY'),
+            label: 'vision-provider',
+        });
+    }
+
+    // Provider utama (chat).
+    if (botConfig) {
+        const active = botConfig.getActiveProvider();
+        if (active?.base_url) {
+            const baseURL = normalizeBaseURL(active.base_url);
+            if (!seen.has(baseURL)) {
+                seen.add(baseURL);
+                providers.push({ baseURL, apiKey: active.apiKey, label: 'main-router' });
+            }
+        }
+    }
 
     const mainBase = normalizeBaseURL(readEnv('NINER_BASE_URL', '9ROUTER_BASE_URL'));
-    const mainKey = readEnv('NINER_API_KEY', '9ROUTER_API_KEY');
-    if (mainBase && mainBase !== visionBase) {
-        providers.push({ baseURL: mainBase, apiKey: mainKey, label: 'main-router' });
+    if (mainBase && !seen.has(mainBase)) {
+        providers.push({
+            baseURL: mainBase,
+            apiKey: readEnv('NINER_API_KEY', '9ROUTER_API_KEY'),
+            label: 'main-router',
+        });
     }
 
     return providers;

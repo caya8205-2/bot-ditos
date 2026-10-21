@@ -1,15 +1,35 @@
 
 const OpenAI = require('openai');
 const { OWNER_ID } = require('../config');
+const botConfig = require('./botConfig');
 
 function normalizeBaseURL(url) {
     const trimmed = (url || 'http://127.0.0.1:5001/v1').replace(/\/+$/, '');
     return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
 }
 
-const LOCAL_LLM_BASE_URL = normalizeBaseURL(process.env.LOCAL_LLM_BASE_URL);
-const LOCAL_LLM_MODEL = process.env.LOCAL_LLM_MODEL || 'Qwen3.5-2B-Q8_0.gguf';
-const LOCAL_LLM_TIMEOUT_MS = Number(process.env.LOCAL_LLM_TIMEOUT_MS) || 120000;
+/**
+ * Konfigurasi LLM lokal dari config.yaml bagian `local_llm:`.
+ * API key tetap di .env (LOCAL_LLM_API_KEY); KoboldCpp biasanya tidak butuh.
+ */
+function getLocalLLMConfig() {
+    const section = botConfig.getSection('local_llm', {
+        base_url: 'http://127.0.0.1:5001/v1',
+        model: 'Qwen3.5-2B-Q8_0.gguf',
+        timeout_ms: 120000,
+    });
+
+    return {
+        baseURL: normalizeBaseURL(section.base_url || process.env.LOCAL_LLM_BASE_URL),
+        model: section.model || process.env.LOCAL_LLM_MODEL || 'Qwen3.5-2B-Q8_0.gguf',
+        timeoutMs: botConfig.asNumber(section.timeout_ms, 120000),
+    };
+}
+
+const LOCAL_LLM_CONFIG = getLocalLLMConfig();
+const LOCAL_LLM_BASE_URL = LOCAL_LLM_CONFIG.baseURL;
+const LOCAL_LLM_MODEL = LOCAL_LLM_CONFIG.model;
+const LOCAL_LLM_TIMEOUT_MS = LOCAL_LLM_CONFIG.timeoutMs;
 
 const localLLMClient = new OpenAI({
     apiKey: process.env.LOCAL_LLM_API_KEY || 'koboldcpp',
@@ -54,6 +74,7 @@ module.exports = {
     LOCAL_LLM_BASE_URL,
     LOCAL_LLM_MODEL,
     LOCAL_LLM_TIMEOUT_MS,
+    getLocalLLMConfig,
     getLocalLLMClient,
     callLocalLLM,
     checkLocalLLMStatus,

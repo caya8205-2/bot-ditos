@@ -3,14 +3,12 @@
 /**
  * Vision manager generik untuk deskripsi gambar dan OCR.
  *
- * Sebelumnya modul ini terikat ke Gemini lewat SDK Google. Sekarang memakai
- * endpoint OpenAI-compatible apa pun, jadi cukup set VISION_BASE_URL dan
- * VISION_API_KEY ke provider mana pun (9router lokal, ZenMux, OpenAI, dsb)
- * tanpa mengubah kode.
+ * Konfigurasi dibaca dari config.yaml bagian `vision:`, yang merujuk provider
+ * lewat `name` (base URL dan nama variabel key ada di sana, nilainya di .env).
+ * Fallback ke VISION_BASE_URL / VISION_API_KEY kalau bagian itu belum ada.
  *
  * Model dipilih dari katalog provider (/models) berdasarkan kapabilitas
- * vision yang sebenarnya, bukan dari nama. Kalau katalog tidak tersedia,
- * dipakai VISION_MODEL atau pola nama sebagai cadangan.
+ * vision yang sebenarnya, bukan dari nama.
  *
  * Modul video sengaja terpisah (videoVisionManager) karena kebutuhan dan
  * batas ukurannya berbeda.
@@ -20,6 +18,7 @@ const axios = require('axios');
 const sharp = require('sharp');
 const OpenAI = require('openai');
 const catalog = require('./modelCatalog');
+const botConfig = require('./botConfig');
 
 function readEnv(...keys) {
     for (const key of keys) {
@@ -33,48 +32,77 @@ function normalizeBaseURL(url) {
     return (url || '').replace(/\/+$/, '');
 }
 
-const VISION_BASE_URL = normalizeBaseURL(readEnv('VISION_BASE_URL'));
-const VISION_API_KEY = readEnv('VISION_API_KEY');
-// Model eksplisit. Kosong berarti dipilih otomatis dari katalog.
-const VISION_MODEL = readEnv('VISION_MODEL');
-const VISION_TIMEOUT_MS = Number(readEnv('VISION_TIMEOUT_MS')) || 60000;
-const VISION_MAX_DIMENSION = Number(readEnv('VISION_MAX_DIMENSION')) || 1024;
-// Ambang minimum prompt_tokens untuk memastikan gambar benar-benar dicerna.
-const MIN_IMAGE_PROMPT_TOKENS = Number(readEnv('VISION_MIN_PROMPT_TOKENS')) || 100;
-// Jumlah kandidat model yang dicoba sebelum menyerah.
-const MAX_VISION_ATTEMPTS = Number(readEnv('VISION_MAX_ATTEMPTS')) || 3;
+const VISION_DEFAULTS = {
+    provider: null,
+    model: '',
+    timeout_ms: 60000,
+    max_dimension: 1024,
+    min_prompt_tokens: 100,
+    max_attempts: 3,
+};
+
+/**
+ * Konfigurasi vision dari config.yaml bagian `vision:`.
+ * Provider dirujuk lewat name, jadi base URL dan nama variabel key ada di
+ * config sedangkan nilainya tetap di .env.
+ */
+function getVisionConfig() {
+    const { section, provider } = botConfig.getProviderForSection('vision', VISION_DEFAULTS);
+
+    // Cadangan: kalau config.yaml belum punya bagian vision, pakai env lama.
+    const baseURL = provider
+        ? normalizeBaseURL(provider.base_url)
+        : normalizeBaseURL(readEnv('VISION_BASE_URL', 'ZENMUX_BASE_URL'));
+    const apiKey = provider
+        ? provider.apiKey
+        : readEnv('VISION_API_KEY', 'ZENMUX_API_KEY');
+
+    return {
+        baseURL,
+        apiKey,
+        model: section.model || readEnv('VISION_MODEL'),
+        timeoutMs: botConfig.asNumber(section.timeout_ms, 60000),
+        maxDimension: botConfig.asNumber(section.max_dimension, 1024),
+        minPromptTokens: botConfig.asNumber(section.min_prompt_tokens, 100),
+        maxAttempts: botConfig.asNumber(section.max_attempts, 3),
+    };
+}
+
+let visionClient = null;
+let visionClientBaseURL = null;
+let resolvedModel = null;
 
 // Model yang sudah terbukti tidak menerima gambar, supaya tidak dicoba ulang.
 const failedVisionModels = new Set();
-
-let visionClient = null;
-let resolvedModel = null;
 
 /**
  * Client OpenAI-compatible untuk provider vision.
  */
 function getVisionClient() {
-    if (!VISION_BASE_URL) {
+    const cfg = getVisionConfig();
+    if (!cfg.baseURL) {
         throw new Error(
-            'VISION_BASE_URL belum diset. Isi dengan base URL provider ' +
-            'OpenAI-compatible, misal https://zenmux.ai/api/v1 atau router lokal.'
+            'Vision provider belum diset. Isi bagian `vision:` di config.yaml ' +
+            '(provider: <name>) atau VISION_BASE_URL di .env.'
         );
     }
-    if (!visionClient) {
+    // Client di-cache per base URL supaya ganti provider langsung berlaku.
+    if (!visionClient || visionClientBaseURL !== cfg.baseURL) {
         visionClient = new OpenAI({
-            apiKey: VISION_API_KEY || 'vision',
-            baseURL: VISION_BASE_URL,
+            apiKey: cfg.apiKey || 'vision',
+            baseURL: cfg.baseURL,
             // Retry otomatis memperlama kegagalan secara drastis: tiga kandidat
             // model dengan retry bisa jadi tiga menit. Vision manager hanya
             // jalur cadangan, jadi lebih baik cepat gagal lalu fallback.
             maxRetries: 0,
         });
+        visionClientBaseURL = cfg.baseURL;
     }
     return visionClient;
 }
 
 function isVisionProviderAvailable() {
-    return Boolean(VISION_BASE_URL);
+    return Boolean(getVisionConfig().baseURL);
 }
 
 /**
@@ -91,8 +119,9 @@ function isVisionProviderAvailable() {
  */
 async function resolveVisionModel() {
     if (resolvedModel) return resolvedModel;
-    if (VISION_MODEL) {
-        resolvedModel = VISION_MODEL;
+    const cfg = getVisionConfig();
+    if (cfg.model) {
+        resolvedModel = cfg.model;
         return resolvedModel;
     }
 
@@ -123,9 +152,10 @@ async function resolveVisionModel() {
  */
 async function getVisionCandidates() {
     try {
+        const cfg = getVisionConfig();
         const cat = await catalog.loadCatalog({
-            baseURL: VISION_BASE_URL,
-            apiKey: VISION_API_KEY,
+            baseURL: cfg.baseURL,
+            apiKey: cfg.apiKey,
             label: 'vision-manager',
         });
         if (!cat) return [];
@@ -153,7 +183,8 @@ async function getVisionCandidates() {
  * Animasi (GIF) diratakan jadi satu frame karena API chat hanya menerima
  * satu gambar per part.
  */
-async function fetchAndProcessImage(imageUrl, maxDimension = VISION_MAX_DIMENSION) {
+async function fetchAndProcessImage(imageUrl, maxDimension = null) {
+    const limit = maxDimension || getVisionConfig().maxDimension;
     try {
         let buffer;
         if (typeof imageUrl === 'string' && imageUrl.startsWith('data:image/')) {
@@ -168,7 +199,7 @@ async function fetchAndProcessImage(imageUrl, maxDimension = VISION_MAX_DIMENSIO
         }
 
         const resizedBuffer = await sharp(buffer)
-            .resize(maxDimension, maxDimension, { fit: 'inside', withoutEnlargement: true })
+            .resize(limit, limit, { fit: 'inside', withoutEnlargement: true })
             .jpeg({ quality: 85 })
             .toBuffer();
 
@@ -203,13 +234,14 @@ const DEFAULT_DESCRIBE_PROMPT =
  */
 async function describeImage(imageUrl, prompt = null, options = {}) {
     if (!isVisionProviderAvailable()) {
-        console.warn('[VisionManager] VISION_BASE_URL belum diset.');
+        console.warn('[VisionManager] Vision provider belum diset di config.yaml.');
         return null;
     }
 
     // Model eksplisit -> satu percobaan saja, karena user sudah menentukan.
-    if (options.model || VISION_MODEL) {
-        return tryDescribe(imageUrl, prompt, options.model || VISION_MODEL, options);
+    const cfg = getVisionConfig();
+    if (options.model || cfg.model) {
+        return tryDescribe(imageUrl, prompt, options.model || cfg.model, options);
     }
 
     const candidates = await getVisionCandidates();
@@ -219,7 +251,7 @@ async function describeImage(imageUrl, prompt = null, options = {}) {
 
     // Coba beberapa kandidat teratas. Model yang gagal tidak dicoba lagi.
     const tried = [];
-    for (const model of candidates.slice(0, MAX_VISION_ATTEMPTS)) {
+    for (const model of candidates.slice(0, cfg.maxAttempts)) {
         if (failedVisionModels.has(model)) continue;
         tried.push(model);
         const text = await tryDescribe(imageUrl, prompt, model, options);
@@ -232,7 +264,7 @@ async function describeImage(imageUrl, prompt = null, options = {}) {
 
     console.warn(
         `[VisionManager] Semua kandidat gagal (${tried.join(', ')}). ` +
-        'Set VISION_MODEL untuk memilih model tertentu.'
+        'Set vision.model di config.yaml untuk memilih model tertentu.'
     );
     return null;
 }
@@ -263,7 +295,7 @@ async function tryDescribe(imageUrl, prompt, model, options = {}) {
             // mengembalikan content kosong, jadi beri ruang lebih.
             max_tokens: options.maxTokens || 1500,
         }, {
-            timeout: VISION_TIMEOUT_MS,
+            timeout: getVisionConfig().timeoutMs,
         });
 
         const text = completion.choices?.[0]?.message?.content?.trim();
@@ -279,7 +311,7 @@ async function tryDescribe(imageUrl, prompt, model, options = {}) {
         // Model yang mengabaikan lampiran hanya menghasilkan puluhan token,
         // atau menjawab bahwa ia tidak bisa melihat gambar. Hasil seperti itu
         // adalah halusinasi/penolakan, jadi jangan dipakai.
-        if (promptTokens > 0 && promptTokens < MIN_IMAGE_PROMPT_TOKENS) {
+        if (promptTokens > 0 && promptTokens < getVisionConfig().minPromptTokens) {
             console.warn(
                 `[VisionManager] Gambar tidak ikut diproses (prompt_tokens=${promptTokens}). ` +
                 `Model "${model}" kemungkinan tidak benar-benar menerima input gambar.`
@@ -313,13 +345,7 @@ async function extractTextFromImage(imageUrl, instruction = null, options = {}) 
 }
 
 module.exports = {
-    VISION_BASE_URL,
-    VISION_API_KEY,
-    VISION_MODEL,
-    VISION_TIMEOUT_MS,
-    VISION_MAX_DIMENSION,
-    MIN_IMAGE_PROMPT_TOKENS,
-    MAX_VISION_ATTEMPTS,
+    getVisionConfig,
     isVisionProviderAvailable,
     getVisionClient,
     resolveVisionModel,
@@ -328,6 +354,5 @@ module.exports = {
     describeImage,
     tryDescribe,
     extractTextFromImage,
-    failedVisionModels,
     DEFAULT_DESCRIBE_PROMPT,
 };

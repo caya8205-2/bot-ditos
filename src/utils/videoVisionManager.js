@@ -7,13 +7,9 @@
  * sudah video-capable, request video dikirim langsung ke model utama dan modul
  * ini tidak disentuh sama sekali.
  *
- * Model video biasanya tidak ada di router utama, jadi provider-nya terpisah
- * (contoh: ZenMux). Konfigurasi lewat env:
- *   VISION_PROVIDER_BASE_URL   (fallback: ZENMUX_BASE_URL, VISION_BASE_URL)
- *   VISION_PROVIDER_API_KEY    (fallback: ZENMUX_API_KEY, VISION_API_KEY)
- *   VISION_VIDEO_MODEL         (fallback: ZENMUX_VIDEO_MODEL)
- *   VISION_VIDEO_TIMEOUT_MS
- *   VISION_VIDEO_MAX_BYTES     batas ukuran file sebelum ditolak
+ * Konfigurasi dibaca dari config.yaml bagian `vision_video:`, yang merujuk
+ * provider lewat `name`. Nilai API key tetap di .env lewat key_env provider.
+ * Fallback ke env lama kalau bagian itu belum ada.
  */
 
 const OpenAI = require('openai');
@@ -25,6 +21,7 @@ const os = require('os');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
 const { lookupModelCapabilities } = require('./modelCatalog');
+const botConfig = require('./botConfig');
 
 function readEnv(...keys) {
     for (const key of keys) {
@@ -38,29 +35,49 @@ function normalizeBaseURL(url) {
     return (url || '').replace(/\/+$/, '');
 }
 
-const VISION_PROVIDER_BASE_URL = normalizeBaseURL(
-    readEnv('VISION_PROVIDER_BASE_URL', 'ZENMUX_BASE_URL', 'VISION_BASE_URL')
-);
-const VISION_PROVIDER_API_KEY = readEnv(
-    'VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY', 'VISION_API_KEY'
-);
-const VISION_VIDEO_MODEL = readEnv('VISION_VIDEO_MODEL', 'ZENMUX_VIDEO_MODEL');
-const VISION_VIDEO_TIMEOUT_MS = Number(readEnv('VISION_VIDEO_TIMEOUT_MS')) || 240000;
-// Batas unduhan dari Discord. Video Discord umumnya ~50MB untuk clip 30 detik.
-const VISION_VIDEO_DOWNLOAD_MAX_BYTES =
-    Number(readEnv('VISION_VIDEO_DOWNLOAD_MAX_BYTES')) || 100 * 1024 * 1024;
-// Target ukuran setelah dikompres, karena base64 membengkak ~33%.
-const VISION_VIDEO_TARGET_BYTES =
-    Number(readEnv('VISION_VIDEO_TARGET_BYTES')) || 9 * 1024 * 1024;
-// Durasi maksimum yang dikirim; sisanya dipotong supaya tidak timeout.
-const VISION_VIDEO_MAX_DURATION_S =
-    Number(readEnv('VISION_VIDEO_MAX_DURATION_S')) || 90;
-const VISION_VIDEO_MAX_HEIGHT =
-    Number(readEnv('VISION_VIDEO_MAX_HEIGHT')) || 480;
-// Ambang minimum prompt_tokens untuk memastikan media benar-benar dicerna.
-// Model yang mengabaikan lampiran hanya menghasilkan puluhan token teks.
-const MIN_MEDIA_PROMPT_TOKENS =
-    Number(readEnv('VISION_VIDEO_MIN_PROMPT_TOKENS')) || 100;
+const VISION_VIDEO_DEFAULTS = {
+    provider: null,
+    model: '',
+    timeout_ms: 240000,
+    download_max_bytes: 104857600,
+    target_bytes: 9437184,
+    max_duration_s: 90,
+    max_height: 480,
+    min_prompt_tokens: 100,
+};
+
+/**
+ * Konfigurasi video vision dari config.yaml bagian `vision_video:`.
+ * Dibaca sebagai fungsi supaya perubahan config langsung berlaku.
+ */
+function getVideoConfig() {
+    const { section, provider } = botConfig.getProviderForSection(
+        'vision_video',
+        VISION_VIDEO_DEFAULTS
+    );
+
+    const baseURL = provider
+        ? normalizeBaseURL(provider.base_url)
+        : normalizeBaseURL(
+            readEnv('VISION_PROVIDER_BASE_URL', 'ZENMUX_BASE_URL', 'VISION_BASE_URL')
+        );
+    const apiKey = provider
+        ? provider.apiKey
+        : readEnv('VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY', 'VISION_API_KEY');
+
+    return {
+        baseURL,
+        apiKey,
+        providerName: provider?.name || null,
+        model: section.model || readEnv('VISION_VIDEO_MODEL', 'ZENMUX_VIDEO_MODEL'),
+        timeoutMs: botConfig.asNumber(section.timeout_ms, 240000),
+        downloadMaxBytes: botConfig.asNumber(section.download_max_bytes, 104857600),
+        targetBytes: botConfig.asNumber(section.target_bytes, 9437184),
+        maxDurationS: botConfig.asNumber(section.max_duration_s, 90),
+        maxHeight: botConfig.asNumber(section.max_height, 480),
+        minPromptTokens: botConfig.asNumber(section.min_prompt_tokens, 100),
+    };
+}
 
 // Model yang sudah terbukti tidak menerima input video. Setelah satu kegagalan
 // nyata, jalur video dilewati untuk model itu supaya tidak membuang waktu dan
@@ -84,22 +101,23 @@ function isModelMarkedVideoUnsupported(model) {
 let visionClient = null;
 
 function isVideoProviderAvailable() {
-    return Boolean(VISION_PROVIDER_BASE_URL) && Boolean(VISION_VIDEO_MODEL);
+    const cfg = getVideoConfig();
+    return Boolean(cfg.baseURL) && Boolean(cfg.model);
 }
 
 function getVisionClient() {
     if (!isVideoProviderAvailable()) {
         throw new Error(
-            'Provider video belum dikonfigurasi. Butuh VISION_PROVIDER_BASE_URL ' +
-            'dan VISION_VIDEO_MODEL.'
+            'Provider video belum dikonfigurasi. Isi bagian `vision_video:` ' +
+            'di config.yaml (provider dan model).'
         );
     }
 
     if (!visionClient) {
         visionClient = new OpenAI({
-            apiKey: VISION_PROVIDER_API_KEY || 'vision',
-            baseURL: VISION_PROVIDER_BASE_URL,
-            timeout: VISION_VIDEO_TIMEOUT_MS,
+            apiKey: cfg.apiKey || 'vision',
+            baseURL: cfg.baseURL,
+            timeout: cfg.timeoutMs,
             maxRetries: 0,
         });
     }
@@ -115,10 +133,11 @@ function getVisionClient() {
  * ke H.264 dengan resolusi dan bitrate yang disesuaikan target ukuran.
  */
 async function fetchVideoAsDataUrl(videoUrl, options = {}) {
-    const downloadMax = options.downloadMaxBytes || VISION_VIDEO_DOWNLOAD_MAX_BYTES;
-    const targetBytes = options.targetBytes || VISION_VIDEO_TARGET_BYTES;
-    const maxDuration = options.maxDurationS || VISION_VIDEO_MAX_DURATION_S;
-    const maxHeight = options.maxHeight || VISION_VIDEO_MAX_HEIGHT;
+    const cfg = getVideoConfig();
+    const downloadMax = options.downloadMaxBytes || cfg.downloadMaxBytes;
+    const targetBytes = options.targetBytes || cfg.targetBytes;
+    const maxDuration = options.maxDurationS || cfg.maxDurationS;
+    const maxHeight = options.maxHeight || cfg.maxHeight;
 
     const response = await axios.get(videoUrl, {
         responseType: 'arraybuffer',
@@ -181,9 +200,10 @@ async function fetchVideoAsDataUrl(videoUrl, options = {}) {
  * Beberapa percobaan dengan bitrate menurun kalau hasil masih kebesaran.
  */
 async function compressVideo(inputBuffer, options = {}) {
-    const targetBytes = options.targetBytes || VISION_VIDEO_TARGET_BYTES;
-    const maxDurationS = options.maxDurationS || VISION_VIDEO_MAX_DURATION_S;
-    const maxHeight = options.maxHeight || VISION_VIDEO_MAX_HEIGHT;
+    const cfg = getVideoConfig();
+    const targetBytes = options.targetBytes || cfg.targetBytes;
+    const maxDurationS = options.maxDurationS || cfg.maxDurationS;
+    const maxHeight = options.maxHeight || cfg.maxHeight;
 
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ditos-vcompress-'));
     const inputPath = path.join(tmpDir, 'in.mp4');
@@ -313,7 +333,7 @@ async function analyzeImageWithVisionModel(imageDataUrl, prompt = null, options 
     if (!isVideoProviderAvailable()) return null;
 
     try {
-        const model = options.model || VISION_VIDEO_MODEL;
+        const model = options.model || getVideoConfig().model;
         const client = getVisionClient();
         const completion = await client.chat.completions.create({
             model,
@@ -361,7 +381,7 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
     }
 
     try {
-        const model = options.model || VISION_VIDEO_MODEL;
+        const model = options.model || getVideoConfig().model;
 
         // Kalau model ini sudah terbukti gagal menerima video, jangan ulangi.
         if (isModelMarkedVideoUnsupported(model)) {
@@ -374,7 +394,7 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
         if (fromCatalog && !fromCatalog.video && !options.force) {
             console.warn(
                 `[VisionVideo] Katalog menyatakan "${model}" tidak menerima video. ` +
-                'Tetap dicoba karena VISION_VIDEO_MODEL di-set eksplisit.'
+                'Tetap dicoba karena vision_video.model di-set eksplisit.'
             );
         }
 
@@ -428,10 +448,10 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
             return null;
         }
 
-        if (promptTokens < MIN_MEDIA_PROMPT_TOKENS) {
+        if (promptTokens < getVideoConfig().minPromptTokens) {
             console.warn(
                 `[VisionVideo] Video tidak ikut diproses: prompt_tokens hanya ${promptTokens} ` +
-                `(minimum ${MIN_MEDIA_PROMPT_TOKENS}). Model "${model}" kemungkinan tidak ` +
+                `(minimum ${getVideoConfig().minPromptTokens}). Model "${model}" kemungkinan tidak ` +
                 'benar-benar menerima input video meski katalog menyatakannya.'
             );
             markModelVideoUnsupported(model);
@@ -450,7 +470,7 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
         // Kegagalan yang menunjukkan model tidak menerima format video
         // (bukan sekadar rate limit atau gangguan jaringan) membuat model
         // ditandai, supaya percobaan berikutnya langsung ke jalur gambar.
-        const model = options.model || VISION_VIDEO_MODEL;
+        const model = options.model || getVideoConfig().model;
         const isFormatRejection = /invalid input|参数有误|格式|unsupported|not support/i.test(reason);
         const isRateLimit = /usage limit|rate limit|quota|balance/i.test(reason);
         if (isFormatRejection && !isRateLimit) {
@@ -461,15 +481,7 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
 }
 
 module.exports = {
-    VISION_PROVIDER_BASE_URL,
-    VISION_PROVIDER_API_KEY,
-    VISION_VIDEO_MODEL,
-    VISION_VIDEO_TIMEOUT_MS,
-    VISION_VIDEO_DOWNLOAD_MAX_BYTES,
-    VISION_VIDEO_TARGET_BYTES,
-    VISION_VIDEO_MAX_DURATION_S,
-    VISION_VIDEO_MAX_HEIGHT,
-    MIN_MEDIA_PROMPT_TOKENS,
+    getVideoConfig,
     isVideoProviderAvailable,
     getVisionClient,
     fetchVideoAsDataUrl,

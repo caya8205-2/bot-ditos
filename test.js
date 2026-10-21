@@ -201,13 +201,16 @@ async function testAll() {
     console.log('\n[TEST] Checking video compression settings...');
     {
         const vv = require('./src/utils/videoVisionManager');
+        const cfg = vv.getVideoConfig();
         // Clip Discord ~50MB harus bisa diunduh, dan hasil kompresi di bawah target.
-        assert(vv.VISION_VIDEO_DOWNLOAD_MAX_BYTES >= 50 * 1024 * 1024,
+        assert(cfg.downloadMaxBytes >= 50 * 1024 * 1024,
             'Batas unduh harus mengakomodasi clip Discord ~50MB');
-        assert(vv.VISION_VIDEO_TARGET_BYTES <= 12 * 1024 * 1024,
+        assert(cfg.targetBytes <= 12 * 1024 * 1024,
             'Target kompresi harus cukup kecil untuk base64');
-        assert(vv.VISION_VIDEO_MAX_HEIGHT >= 360,
+        assert(cfg.maxHeight >= 360,
             'Resolusi hasil minimal 360p supaya teks masih terbaca');
+        assert(cfg.baseURL, 'Provider video harus ter-resolve dari config.yaml');
+        assert.strictEqual(typeof cfg.targetBytes, 'number', 'Nilai config harus angka, bukan string');
         console.log(' -> PASS: konfigurasi video masuk akal');
     }
 
@@ -274,6 +277,35 @@ async function testAll() {
         botConfig.setActiveModel(original, null, false);
         assert.strictEqual(botConfig.getActiveModel(), original, 'Model harus bisa dikembalikan');
         console.log(' -> PASS: ganti model runtime tanpa restart');
+    }
+
+    console.log('\n[TEST] Checking vision and video config from config.yaml...');
+    {
+        const bc = require('./src/utils/botConfig');
+        const vm = require('./src/utils/visionManager');
+        const vv = require('./src/utils/videoVisionManager');
+
+        const cfg = bc.getConfig();
+        assert(cfg.vision, 'config.yaml harus punya bagian vision');
+        assert(cfg.vision_video, 'config.yaml harus punya bagian vision_video');
+
+        const vc = vm.getVisionConfig();
+        assert(vc.baseURL, 'vision baseURL harus ter-resolve dari provider');
+        assert(vc.apiKey, 'vision apiKey harus ter-resolve dari key_env');
+        assert.strictEqual(typeof vc.timeoutMs, 'number', 'timeoutMs harus angka');
+        assert.strictEqual(typeof vc.maxAttempts, 'number', 'maxAttempts harus angka');
+
+        const vid = vv.getVideoConfig();
+        assert(vid.baseURL, 'video baseURL harus ter-resolve');
+        assert(vid.model, 'video model harus terisi');
+        assert.strictEqual(typeof vid.targetBytes, 'number', 'targetBytes harus angka');
+
+        // Semua provider di config harus punya key yang benar-benar ada di .env.
+        for (const p of bc.getProviders()) {
+            assert(bc.resolveProviderKey(p),
+                `Provider "${p.name}" tidak menemukan key di env (key_env: ${p.key_env})`);
+        }
+        console.log(' -> PASS: konfigurasi vision, video, dan semua provider valid');
     }
 
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');

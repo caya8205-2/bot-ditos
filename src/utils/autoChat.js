@@ -24,39 +24,59 @@ function filterChannelHistory(messages) {
     });
 }
 
-const AUTO_CHAT_CONFIG = {
+const botConfig = require('./botConfig');
+
+/**
+ * Konfigurasi auto-chat dari config.yaml bagian `auto_chat:`.
+ * Nilai bawaan di bawah dipakai kalau bagian itu tidak ada, sehingga perilaku
+ * bot tidak berubah saat config belum diisi.
+ */
+const AUTO_CHAT_DEFAULTS = {
     enabled: true,
-    replyChance: 30, // 30% chance bakal reply
-    minMessagesBetweenReplies: 6,
-    replyCooldown: 2 * 60 * 1000, // 2 menit
+    reply_chance: 30,
+    min_messages_between_replies: 6,
+    reply_cooldown_ms: 2 * 60 * 1000,
     // Jendela debounce: pesan beruntun dari orang yang sama dianggap
     // satu giliran bicara, bukan beberapa trigger terpisah.
-    burstWindowMs: 2500,
-    idleChat: {
+    burst_window_ms: 2500,
+    idle_chat: {
         enabled: false,
-        minIdleTime: 20 * 60 * 1000, // 20 menit sepi
-        maxIdleTime: 2 * 60 * 60 * 1000, // 2 jam
+        min_idle_ms: 20 * 60 * 1000,
+        max_idle_ms: 2 * 60 * 60 * 1000,
     },
-    triggerKeywords: [
+    trigger_keywords: [
         'ditos', 'bot', 'ai', 'gemini', 'kobold',
         'coding', 'ngoding', 'error', 'bug', 'help',
         'musik', 'lagu', 'game', 'bot ditos', 'anime', 'gaming', 'geming',
     ],
-    blacklistedChannels: [
-        '1442463723385126933', // welcome channel
-        '1218532327509065788', // info game dan kode redeem
-        '1173032345582964798', // tutor build
-        '1372884342165995593', // dummy
-        '1372884376416813056', // dummy
-        '1372884394985001100', // dummy
-        '1110951940596174858', // spam command bot musik
-        '1447134518262628373', // yona mansion
-        '1442090815777280052', // rodes
-        '1372884089253920808', // tempat garam
-        '1279044696051810345', // minyak atas
-        '1442006544030896138', // Bot Ditos
-    ],
+    blacklisted_channels: [],
 };
+
+function buildAutoChatConfig() {
+    const section = botConfig.getSection('auto_chat', AUTO_CHAT_DEFAULTS);
+    const idle = { ...AUTO_CHAT_DEFAULTS.idle_chat, ...(section.idle_chat || {}) };
+
+    return {
+        enabled: botConfig.asBool(section.enabled, true),
+        replyChance: botConfig.asNumber(section.reply_chance, 30),
+        minMessagesBetweenReplies: botConfig.asNumber(section.min_messages_between_replies, 6),
+        replyCooldown: botConfig.asNumber(section.reply_cooldown_ms, 2 * 60 * 1000),
+        burstWindowMs: botConfig.asNumber(section.burst_window_ms, 2500),
+        idleChat: {
+            enabled: botConfig.asBool(idle.enabled, false),
+            minIdleTime: botConfig.asNumber(idle.min_idle_ms, 20 * 60 * 1000),
+            maxIdleTime: botConfig.asNumber(idle.max_idle_ms, 2 * 60 * 60 * 1000),
+        },
+        triggerKeywords: Array.isArray(section.trigger_keywords) && section.trigger_keywords.length
+            ? section.trigger_keywords.map((k) => String(k).toLowerCase())
+            : AUTO_CHAT_DEFAULTS.trigger_keywords,
+        blacklistedChannels: Array.isArray(section.blacklisted_channels)
+            ? section.blacklisted_channels.map(String)
+            : [],
+    };
+}
+
+const AUTO_CHAT_CONFIG = buildAutoChatConfig();
 
 // ── Guard anti-burst ────────────────────────────────────────────────────────
 // pendingBurst: menampung pesan beruntun per channel sebelum memanggil LLM.

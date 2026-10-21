@@ -151,8 +151,11 @@ function loadConfig(force = false) {
         const text = fs.readFileSync(CONFIG_PATH, 'utf8');
         const parsed = parseSimpleYaml(text);
 
-        // Normalisasi: providers harus array, model harus objek.
+        // Kembalikan seluruh isi file; bagian yang dipakai modul lain tinggal
+        // diakses lewat getSection(). Struktur inti tetap dinormalisasi supaya
+        // pemanggil lama tidak pecah.
         config = {
+            ...parsed,
             model: parsed.model && typeof parsed.model === 'object' ? parsed.model : {},
             providers: Array.isArray(parsed.providers) ? parsed.providers : [],
             fallback_model:
@@ -173,6 +176,54 @@ function loadConfig(force = false) {
 
 function getConfig() {
     return loadConfig();
+}
+
+/**
+ * Ambil satu bagian config sebagai objek.
+ * @param {string} name misal 'vision', 'auto_chat', 'local_llm'
+ * @param {object} [defaults] nilai bawaan kalau bagian itu tidak ada
+ */
+function getSection(name, defaults = {}) {
+    const section = loadConfig()[name];
+    if (section && typeof section === 'object' && !Array.isArray(section)) {
+        return { ...defaults, ...section };
+    }
+    return { ...defaults };
+}
+
+/**
+ * Resolve provider untuk sebuah section (misal vision.provider).
+ * Kalau tidak ketemu, kembalikan null supaya pemanggil bisa memutuskan.
+ */
+function getProviderForSection(sectionName, defaults = {}) {
+    const section = getSection(sectionName, defaults);
+    const providerName = section.provider;
+    const provider = getProviderByName(providerName);
+    if (!provider) return { section, provider: null };
+    return {
+        section,
+        provider: {
+            ...provider,
+            apiKey: resolveProviderKey(provider),
+            source: 'config',
+        },
+    };
+}
+
+/**
+ * Helper tipe: parser mengembalikan semua nilai sebagai string, jadi angka dan
+ * boolean perlu dikonversi eksplisit.
+ */
+function asNumber(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function asBool(value, fallback) {
+    if (typeof value === 'boolean') return value;
+    if (value === 'true' || value === '1') return true;
+    if (value === 'false' || value === '0') return false;
+    return fallback;
 }
 
 function getProviders() {
@@ -350,6 +401,10 @@ module.exports = {
     CONFIG_PATH,
     loadConfig,
     getConfig,
+    getSection,
+    getProviderForSection,
+    asNumber,
+    asBool,
     getProviders,
     getProviderByName,
     resolveProviderKey,

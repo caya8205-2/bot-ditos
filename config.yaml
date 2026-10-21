@@ -7,7 +7,7 @@ providers:
     key_env: NINER_API_KEY
   - name: 9router-office
     base_url: https://router.nalarin.ai/v1
-    key_env: NINER_API_KEY_FALLBACK
+    key_env: NINER_FALLBACK_API_KEY
   - name: zenmux
     base_url: https://zenmux.ai/api/v1
     key_env: ZENMUX_API_KEY
@@ -17,3 +17,105 @@ providers:
 fallback_model:
   provider: 9router-local
   model: ag/gemini-3.8-flash-high
+
+# ── Provider cadangan terakhir (Groq) ───────────────────────────────────────
+groq:
+  model: llama-3.3-70b-versatile
+
+# ── LLM lokal (KoboldCpp / llama.cpp) ───────────────────────────────────────
+local_llm:
+  base_url: http://127.0.0.1:5001/v1
+  model: Qwen3.5-2B-Q8_0.gguf
+  timeout_ms: 120000
+  input_token_budget: 6000
+  cooldown_ms: 300000
+
+# ── Cooldown provider ───────────────────────────────────────────────────────
+cooldown:
+  # Berapa lama model yang gagal dilewati sebelum dicoba lagi.
+  router_ms: 60000
+  groq_ms: 60000
+
+# ── Vision manager (GAMBAR & OCR) ───────────────────────────────────────────
+# provider merujuk ke salah satu name di daftar providers di atas.
+vision:
+  provider: zenmux
+  # Kosongkan supaya model dipilih otomatis dari katalog /models
+  # berdasarkan kapabilitas vision yang sebenarnya.
+  model: ""
+  timeout_ms: 60000
+  max_dimension: 1024
+  # Di bawah jumlah token ini, gambar dianggap tidak benar-benar diproses.
+  min_prompt_tokens: 100
+  # Berapa model dicoba kalau kandidat pertama ternyata tidak bisa gambar.
+  max_attempts: 3
+
+# ── Vision manager untuk VIDEO ──────────────────────────────────────────────
+# Terpisah dari vision gambar karena batas ukuran dan jalur kompresinya beda.
+vision_video:
+  provider: zenmux
+  model: z-ai/glm-4.6v-flash-free
+  timeout_ms: 240000
+  # Batas unduh dari Discord. Clip 30 detik biasanya ~50MB.
+  download_max_bytes: 104857600
+  # Target setelah dikompres (base64 membengkak ~33%).
+  target_bytes: 9437184
+  max_duration_s: 90
+  max_height: 480
+  min_prompt_tokens: 100
+
+# ── Katalog model (/models) ─────────────────────────────────────────────────
+model_catalog:
+  # Berapa lama daftar model provider di-cache.
+  ttl_ms: 1800000
+
+# ── Auto-chat ───────────────────────────────────────────────────────────────
+auto_chat:
+  enabled: true
+  # Persentase peluang ikut nimbrung saat kondisi biasa.
+  reply_chance: 30
+  # Jumlah pesan minimal sebelum boleh membalas lagi.
+  min_messages_between_replies: 6
+  reply_cooldown_ms: 120000
+  # Pesan beruntun dari orang yang sama dalam jendela ini dianggap satu
+  # giliran bicara, bukan beberapa trigger terpisah.
+  burst_window_ms: 2500
+  idle_chat:
+    enabled: false
+    min_idle_ms: 1200000
+    max_idle_ms: 7200000
+  trigger_keywords:
+    - ditos
+    - bot
+    - ai
+    - gemini
+    - kobold
+    - coding
+    - ngoding
+    - error
+    - bug
+    - help
+    - musik
+    - lagu
+    - game
+    - bot ditos
+    - anime
+    - gaming
+    - geming
+  blacklisted_channels:
+    - "1442463723385126933"
+    - "1218532327509065788"
+    - "1173032345582964798"
+    - "1372884342165995593"
+    - "1372884376416813056"
+    - "1372884394985001100"
+    - "1110951940596174858"
+    - "1447134518262628373"
+    - "1442090815777280052"
+    - "1372884089253920808"
+    - "1279044696051810345"
+    - "1442006544030896138"
+
+# ── Lain-lain ───────────────────────────────────────────────────────────────
+prompt_metrics:
+  enabled: true
