@@ -5,8 +5,11 @@ const { preparePromptMessages } = require('./promptBuilder');
 const { extractReactionAndCleanReply } = require('./helpers');
 const {
     getImageAttachments,
+    getVideoAttachments,
     buildImageContext,
+    buildVideoContext,
     renderImageParts,
+    renderVideoParts,
     resolveReferencedMessage,
     detectConversationTone,
 } = require('./messageContext');
@@ -291,9 +294,47 @@ async function generateAutoReply(message, textContent) {
         const imageEntries = await buildImageContext(imageCandidates);
         const imageParts = renderImageParts(imageEntries);
 
+        // ── Konteks video ───────────────────────────────────────────────────
+        // Sama seperti d!chat: capability-gated, model video-capable menerima
+        // video langsung, selain itu lewat vision manager / frame sampling.
+        const videoCandidates = [];
+
+        for (const attachment of getVideoAttachments(message)) {
+            videoCandidates.push({
+                attachment,
+                label: `Video yang dikirim ${message.author.username} sekarang`,
+            });
+        }
+
+        if (referencedMessage) {
+            for (const attachment of getVideoAttachments(referencedMessage)) {
+                videoCandidates.push({
+                    attachment,
+                    label: `Video dari ${referencedMessage.author?.username || 'user'} pada pesan yang direply`,
+                });
+            }
+        }
+
+        const videoEntries = await buildVideoContext(videoCandidates, getActiveChatModelInfo().model);
+        const videoParts = renderVideoParts(videoEntries);
+
+        if (videoEntries.length) {
+            console.log(`[AutoChat] Menyertakan ${videoEntries.length} video (mode: ${videoEntries.map((v) => v.mode).join(',')})`);
+        }
+
         if (imageEntries.length) {
             console.log(`[AutoChat] Menyertakan ${imageEntries.length} gambar ke prompt (model: ${getActiveChatModelInfo().model})`);
         }
+
+        // Deskripsi teks (hasil OCR/vision manager) disisipkan ke baseText
+        // supaya model non-vision tetap dapat informasinya.
+        const mediaDescriptions = [
+            ...imageEntries.filter((e) => e.description).map((e) => `${e.label}: ${e.description}`),
+            ...videoEntries.filter((e) => e.description).map((e) => `${e.label}: ${e.description}`),
+        ];
+        const userTextWithMedia = mediaDescriptions.length
+            ? `${userText}\n\n[Media:\n${mediaDescriptions.join('\n')}]`
+            : userText;
 
         // Sinyal suasana untuk instruksi tambahan.
         const tone = detectConversationTone([
@@ -361,15 +402,16 @@ async function generateAutoReply(message, textContent) {
                     },
                     {
                         role: 'user',
-                        content: imageParts.length
+                        content: (imageParts.length || videoParts.length)
                             ? [
                                 {
                                     type: 'text',
-                                    text: `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`,
+                                    text: `Ini pesan terbaru dari ${message.author.username}:\n"${userTextWithMedia}"\n\nReply secara natural dan singkat.`,
                                 },
                                 ...imageParts,
+                                ...videoParts,
                             ]
-                            : `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`
+                            : `Ini pesan terbaru dari ${message.author.username}:\n"${userTextWithMedia}"\n\nReply secara natural dan singkat.`
                     }
                 ], { label: 'auto-chat' }),
                 temperature: 0.85,

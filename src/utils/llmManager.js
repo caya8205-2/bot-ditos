@@ -19,7 +19,7 @@ const {
     callNiner,
     callNinerFallbackProvider,
 } = require('./ninerManager');
-const { isVisionSupported } = require('./visionHelper');
+const { isVisionSupported, isVideoSupported } = require('./visionHelper');
 
 const GROQ_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile';
 const LOCAL_LLM_FALLBACK_COOLDOWN_MS = Math.max(
@@ -386,4 +386,5 @@ module.exports = {
     getLLMProviderStatus,
     getActiveChatModelInfo,
     isVisionSupported,
+    isVideoSupported,
 };

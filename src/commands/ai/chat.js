@@ -1,13 +1,16 @@
 const { channelHistory } = require('../../data/state');
 const state = require('../../data/state'); // Access memoryData via getter/property
 const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTORY } = require('../../data/constants');
-const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo, isVisionSupported } = require('../../utils/llmManager');
+const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo, isVisionSupported, isVideoSupported } = require('../../utils/llmManager');
 const { preparePromptMessages } = require('../../utils/promptBuilder');
 const { resolveMemberFuzzy, extractReactionAndCleanReply } = require('../../utils/helpers');
 const {
     getImageAttachments,
+    getVideoAttachments,
     buildImageContext,
+    buildVideoContext,
     renderImageParts,
+    renderVideoParts,
     resolveReferencedMessage,
 } = require('../../utils/messageContext');
 const { OWNER_ID } = require('../../config');
@@ -29,7 +32,12 @@ module.exports = {
     async execute(message, args, client) {
         const prompt = args.join(' ').trim();
 
-        if (!prompt && message.attachments.size === 0) {
+        // Command boleh tanpa teks kalau ada gambar atau video yang dilampirkan.
+        const hasMedia =
+            getImageAttachments(message).length > 0 ||
+            getVideoAttachments(message).length > 0;
+
+        if (!prompt && !hasMedia) {
             return message.reply('apcb, kalo ngetik yang jelas');
         }
 
@@ -99,13 +107,46 @@ module.exports = {
             const imageEntries = await buildImageContext(imageCandidates);
             const imageParts = renderImageParts(imageEntries);
 
+            // ── Konteks video ───────────────────────────────────────────────
+            // Capability-gated: kalau model utama sudah video-capable, video
+            // dikirim langsung. Kalau tidak, vision manager (provider video
+            // terpisah) yang mendeskripsikan, dengan fallback frame sampling.
+            const videoCandidates = [];
+
+            for (const attachment of getVideoAttachments(message)) {
+                videoCandidates.push({
+                    attachment,
+                    label: `Video yang dikirim ${message.author.username} sekarang`,
+                });
+            }
+
+            if (referencedMessage) {
+                for (const attachment of getVideoAttachments(referencedMessage)) {
+                    videoCandidates.push({
+                        attachment,
+                        label: `Video dari ${referencedMessage.author?.username || 'user'} pada pesan yang direply`,
+                    });
+                }
+            }
+
+            const videoEntries = await buildVideoContext(videoCandidates, activeModel.model);
+            const videoParts = renderVideoParts(videoEntries);
+
+            if (videoEntries.length) {
+                const modes = videoEntries.map((v) => v.mode).join(',');
+                console.log(`[Chat] Menyertakan ${videoEntries.length} video (mode: ${modes})`);
+            }
+
             if (imageEntries.length) {
                 console.log(`[Chat] Menyertakan ${imageEntries.length} gambar ke prompt (model: ${activeModel.model}, vision: ${activeModel.supportsVision})`);
             }
 
-            const imageDescriptions = imageEntries
-                .filter((entry) => entry.description)
-                .map((entry) => `${entry.label}: ${entry.description}`);
+            const imageDescriptions = [
+                ...imageEntries.filter((entry) => entry.description)
+                    .map((entry) => `${entry.label}: ${entry.description}`),
+                ...videoEntries.filter((entry) => entry.description)
+                    .map((entry) => `${entry.label}: ${entry.description}`),
+            ];
 
             let baseText = prompt || 'Liat gambar ini dong';
             if (imageDescriptions.length) {
@@ -203,14 +244,26 @@ module.exports = {
                     ? isVisionSupported(boundModel)
                     : activeModel.supportsVision;
 
+                // Video direct hanya boleh dikirim kalau model yang melayani
+                // memang video-capable. Part hasil deskripsi/frame aman untuk
+                // model vision biasa.
+                const safeVideoParts = videoParts.filter((p) => p.type !== 'video_url');
+                const usableVideoParts = boundModel && isVideoSupported(boundModel)
+                    ? videoParts
+                    : safeVideoParts;
+
+                const mediaParts = boundSupportsVision
+                    ? [...imageParts, ...usableVideoParts]
+                    : [];
+
                 let effectiveUserContent;
-                if (imageParts.length && boundSupportsVision) {
+                if (mediaParts.length) {
                     effectiveUserContent = [
                         {
                             type: 'text',
                             text: `${message.author.username} bilang: ${baseText}`,
                         },
-                        ...imageParts,
+                        ...mediaParts,
                     ];
                 } else {
                     effectiveUserContent = `${message.author.username} bilang: ${baseText}`;

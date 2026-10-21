@@ -15,6 +15,7 @@
 
 const { getActiveChatModelInfo } = require('./llmManager');
 const { fetchAndProcessImage, analyzeImageWithGemini } = require('./geminiManager');
+const { isVideoSupported } = require('./visionHelper');
 
 // Batas gambar yang dikirim ke model per satu trigger auto-chat.
 const MAX_IMAGES_PER_PROMPT = 3;
@@ -25,6 +26,11 @@ const PROCESSED_IMAGE_CACHE_LIMIT = 12;
 
 const descriptionCache = new Map();
 const processedImageCache = new Map();
+const videoCache = new Map();
+
+// Batas video per prompt dan cache video.
+const MAX_VIDEOS_PER_PROMPT = 1;
+const VIDEO_CACHE_LIMIT = 6;
 
 function cacheSet(map, key, value, limit) {
     if (map.has(key)) map.delete(key);
@@ -41,6 +47,22 @@ function isImageAttachment(attachment) {
     if (contentType.startsWith('image/')) return true;
     // Discord tidak selalu mengisi contentType (misal gambar dari clipboard).
     return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(attachment?.name || '');
+}
+
+/**
+ * Apakah attachment berupa video.
+ * Catatan: Discord mengirim video sebagai content type video/*, dan terkadang
+ * tidak mengisi contentType sehingga ekstensi jadi fallback.
+ */
+function isVideoAttachment(attachment) {
+    const contentType = attachment?.contentType || '';
+    if (contentType.startsWith('video/')) return true;
+    return /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(attachment?.name || '');
+}
+
+function getVideoAttachments(message) {
+    if (!message?.attachments?.size) return [];
+    return [...message.attachments.values()].filter(isVideoAttachment);
 }
 
 function getImageAttachments(message) {
@@ -164,8 +186,132 @@ async function resolveReferencedMessage(message) {
 }
 
 /**
+ * Proses satu attachment video, capability-gated:
+ * 1. Kalau model yang dipakai video-capable -> kirim video langsung (tanpa OCR).
+ * 2. Kalau tidak -> minta vision manager (provider video terpisah) deskripsikan.
+ * 3. Kalau provider video tidak siap/gagal -> ekstrak frame jadi grid gambar,
+ *    supaya model vision biasa tetap dapat gambaran isinya.
+ *
+ * @param {object} attachment
+ * @param {string} modelName model yang akan melayani request
+ */
+async function processVideoAttachment(attachment, modelName) {
+    const url = attachment?.url;
+    if (!url) return null;
+
+    if (videoCache.has(url)) return videoCache.get(url);
+
+    // Jalur 1: model utama sudah bisa video, kirim langsung.
+    if (isVideoSupported(modelName)) {
+        try {
+            const videoVision = require('./videoVisionManager');
+            const video = await videoVision.fetchVideoAsDataUrl(url);
+            const result = {
+                mode: 'direct',
+                dataUrl: video.dataUrl,
+                mimeType: video.mimeType,
+                description: null,
+            };
+            cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
+            console.log(`[VisionContext] Video dikirim langsung ke model utama (${modelName})`);
+            return result;
+        } catch (err) {
+            console.warn(`[VisionContext] Direct video gagal (${err.message}), coba vision manager.`);
+        }
+    }
+
+    // Jalur 2: vision manager dengan model video terpisah.
+    try {
+        const videoVision = require('./videoVisionManager');
+        if (videoVision.isVideoProviderAvailable()) {
+            const description = await videoVision.analyzeVideoWithVisionModel(url);
+            if (description) {
+                const result = { mode: 'description', dataUrl: null, description };
+                cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
+                return result;
+            }
+        }
+    } catch (err) {
+        console.warn(`[VisionContext] Vision manager video gagal: ${err.message}`);
+    }
+
+    // Jalur 3: fallback frame sampling.
+    try {
+        const { extractFrameGrid } = require('./videoFrameSampler');
+        const grid = await extractFrameGrid(url);
+        if (grid) {
+            const result = {
+                mode: 'frames',
+                dataUrl: grid.dataUrl,
+                description: null,
+                frameCount: grid.frames,
+            };
+            cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
+            console.log(`[VisionContext] Video diubah jadi grid ${grid.frames} frame`);
+            return result;
+        }
+    } catch (err) {
+        console.warn(`[VisionContext] Frame sampling gagal: ${err.message}`);
+    }
+
+    return null;
+}
+
+/**
+ * Bangun konteks video dari daftar kandidat, maksimal satu video per prompt.
+ * @param {Array<{attachment: object, label: string}>} candidates
+ * @param {string} modelName
+ */
+async function buildVideoContext(candidates = [], modelName) {
+    const seen = new Set();
+    const entries = [];
+
+    for (const candidate of candidates) {
+        const url = candidate?.attachment?.url;
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+
+        const processed = await processVideoAttachment(candidate.attachment, modelName);
+        if (!processed) continue;
+
+        entries.push({ label: candidate.label, ...processed });
+        if (entries.length >= MAX_VIDEOS_PER_PROMPT) break;
+    }
+
+    return entries;
+}
+
+/**
+ * Render entri video jadi content parts.
+ * - direct: video_url part (model video-capable)
+ * - frames: image_url part berisi grid frame
+ * - description: teks hasil vision manager
+ */
+function renderVideoParts(entries = []) {
+    const parts = [];
+    for (const entry of entries) {
+        if (entry.mode === 'direct' && entry.dataUrl) {
+            parts.push({ type: 'text', text: `${entry.label}:` });
+            parts.push({ type: 'video_url', video_url: { url: entry.dataUrl } });
+        } else if (entry.mode === 'frames' && entry.dataUrl) {
+            parts.push({
+                type: 'text',
+                text: `${entry.label} (rangkaian ${entry.frameCount || 'beberapa'} frame dari video):`,
+            });
+            parts.push({ type: 'image_url', image_url: { url: entry.dataUrl } });
+        } else if (entry.description) {
+            parts.push({
+                type: 'text',
+                text: `${entry.label}: [isi video: ${entry.description}]`,
+            });
+        }
+    }
+    return parts;
+}
+
+/**
  * Metadata tambahan yang disimpan ke channelHistory.
- * Menyimpan URL gambar supaya nanti bisa "dilihat" lagi dari riwayat.
+ * Menyimpan URL gambar & video supaya nanti bisa "dilihat" lagi dari riwayat.
  */
 function buildHistoryMeta(message, referencedMessage = null) {
     const meta = {};
@@ -173,6 +319,11 @@ function buildHistoryMeta(message, referencedMessage = null) {
     const images = getImageAttachments(message);
     if (images.length) {
         meta.imageUrls = images.map((a) => a.url).filter(Boolean);
+    }
+
+    const videos = getVideoAttachments(message);
+    if (videos.length) {
+        meta.videoUrls = videos.map((a) => a.url).filter(Boolean);
     }
 
     const reference = message?.reference;
@@ -238,11 +389,17 @@ function detectConversationTone(texts = []) {
 
 module.exports = {
     MAX_IMAGES_PER_PROMPT,
+    MAX_VIDEOS_PER_PROMPT,
     isImageAttachment,
+    isVideoAttachment,
     getImageAttachments,
+    getVideoAttachments,
     processImageAttachment,
+    processVideoAttachment,
     buildImageContext,
+    buildVideoContext,
     renderImageParts,
+    renderVideoParts,
     resolveReferencedMessage,
     buildHistoryMeta,
     detectConversationTone,

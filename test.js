@@ -161,6 +161,36 @@ async function testAll() {
         console.log(' -> PASS: chat reply context resolves with image');
     }
 
+    console.log('\n[TEST] Checking video capability detection...');
+    {
+        const { isVideoSupported, isVisionSupported } = require('./src/utils/visionHelper');
+        assert.strictEqual(isVideoSupported('gemini-2.5-flash'), true, 'Gemini 2.5 harus video-capable');
+        assert.strictEqual(isVideoSupported('z-ai/glm-4.6v-flash-free'), true, 'GLM 4.6V harus video-capable');
+        assert.strictEqual(isVideoSupported('gpt-4o'), false, 'GPT-4o vision tapi bukan video');
+        assert.strictEqual(isVideoSupported('deepseek-chat'), false, 'DeepSeek bukan video');
+        assert.strictEqual(isVisionSupported('z-ai/glm-4.6v-flash-free'), true, 'GLM 4.6V harus vision');
+        console.log(' -> PASS: video/vision detection benar');
+
+        const mc = require('./src/utils/messageContext');
+        assert.strictEqual(mc.isVideoAttachment({ contentType: 'video/mp4' }), true);
+        assert.strictEqual(mc.isVideoAttachment({ name: 'clip.MOV' }), true);
+        assert.strictEqual(mc.isVideoAttachment({ contentType: 'image/png' }), false);
+        console.log(' -> PASS: deteksi attachment video benar');
+    }
+
+    console.log('\n[TEST] Checking video compression settings...');
+    {
+        const vv = require('./src/utils/videoVisionManager');
+        // Clip Discord ~50MB harus bisa diunduh, dan hasil kompresi di bawah target.
+        assert(vv.VISION_VIDEO_DOWNLOAD_MAX_BYTES >= 50 * 1024 * 1024,
+            'Batas unduh harus mengakomodasi clip Discord ~50MB');
+        assert(vv.VISION_VIDEO_TARGET_BYTES <= 12 * 1024 * 1024,
+            'Target kompresi harus cukup kecil untuk base64');
+        assert(vv.VISION_VIDEO_MAX_HEIGHT >= 360,
+            'Resolusi hasil minimal 360p supaya teks masih terbaca');
+        console.log(' -> PASS: konfigurasi video masuk akal');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 

@@ -1,44 +1,49 @@
 /**
- * Helper deteksi apakah suatu nama model mendukung Vision / Multimodal input
+ * Deteksi kapabilitas multimodal sebuah model.
+ *
+ * Sumber utama adalah katalog provider (endpoint /models) yang mengekspos
+ * `input_modalities` per model. Pola nama hanya dipakai sebagai fallback
+ * kalau katalog belum tersedia, supaya bot tidak menebak-nebak.
+ *
+ * Image dan video dipisah karena tidak semua model vision bisa video.
+ */
+
+const catalog = require('./modelCatalog');
+
+/**
+ * Versi sinkron (dipakai di jalur yang tidak bisa await).
+ * Membaca cache katalog; kalau belum ada, jatuh ke pola nama.
  */
 function isVisionSupported(modelName) {
-    if (!modelName || typeof modelName !== 'string') return false;
-    const lower = modelName.toLowerCase();
+    return catalog.isVisionSupportedSync(modelName);
+}
 
-    // Model teks murni spesifik yang sering mengecoh
-    if (lower.includes('llama-3.3') || lower.includes('llama-3.1') || lower.includes('llama-3-') || lower.includes('llama3-') || lower.includes('llama-3.2-1b') || lower.includes('llama-3.2-3b')) {
-        if (!lower.includes('vision')) return false;
-    }
-    if (lower.includes('deepseek') && !lower.includes('vl')) return false;
-    if (lower.includes('gpt-3.5') || lower.includes('gpt-oss') || lower.includes('qwen2.5-coder')) return false;
+function isVideoSupported(modelName) {
+    return catalog.isVideoSupportedSync(modelName);
+}
 
-    // Pattern nama model multimodal/vision
-    const visionKeywords = [
-        'vision',
-        '-vl',
-        'vl-',
-        '/vl',
-        '_vl',
-        'gemini',
-        'gpt-4o',
-        'gpt-4.5',
-        'gpt-5',
-        'claude-3',
-        'claude-sonnet',
-        'claude-opus',
-        'claude-haiku',
-        'pixtral',
-        'llava',
-        'gemma-3',
-        'minicpm-v',
-        'internvl',
-        'glm-4v',
-        'omni',
-    ];
+/**
+ * Versi async, lebih akurat karena bisa mengambil katalog bila cache kosong.
+ */
+async function isVisionSupportedAsync(modelName) {
+    return catalog.isVisionSupportedAsync(modelName);
+}
 
-    return visionKeywords.some(keyword => lower.includes(keyword));
+async function isVideoSupportedAsync(modelName) {
+    return catalog.isVideoSupportedAsync(modelName);
+}
+
+/**
+ * Prefetch katalog di awal supaya deteksi sinkron langsung akurat.
+ */
+function warmModelCatalog() {
+    return catalog.warmCatalog();
 }
 
 module.exports = {
     isVisionSupported,
+    isVideoSupported,
+    isVisionSupportedAsync,
+    isVideoSupportedAsync,
+    warmModelCatalog,
 };

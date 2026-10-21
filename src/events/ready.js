@@ -6,6 +6,7 @@ const { loadMemory, loadTriviaScore } = require('../utils/helpers');
 const { setMemoryData, setTriviaScore } = require('../data/state');
 const { restartAllReminders } = require('../utils/reminderManager');
 const { startIdleChecker } = require('../utils/autoChat');
+const { warmModelCatalog } = require('../utils/visionHelper');
 const { TEMP_DIR } = require('../config');
 const SpotifyWebApi = require('spotify-web-api-node');
 const spotifyApi = new SpotifyWebApi({
@@ -63,6 +64,9 @@ module.exports = {
 
         await restartAllReminders(client);
         startIdleChecker(client);
+        // Prefetch katalog model supaya deteksi vision/video akurat sejak awal,
+        // bukan menunggu panggilan pertama.
+        warmModelCatalog();
 
         const botStatus = [
             'd!help',
