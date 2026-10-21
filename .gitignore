@@ -13,3 +13,4 @@ data/
 # Legacy / User Data
 legacy/
 src/data/songCache.json
+sounds/

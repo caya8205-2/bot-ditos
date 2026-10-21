@@ -1,6 +1,6 @@
 {
   "name": "bot-ditos",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "main": "src/index.js",
   "scripts": {
     "start": "node start-bot.js",
