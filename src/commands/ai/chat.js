@@ -1,10 +1,15 @@
 const { channelHistory } = require('../../data/state');
 const state = require('../../data/state'); // Access memoryData via getter/property
 const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTORY } = require('../../data/constants');
-const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('../../utils/llmManager');
+const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo, isVisionSupported } = require('../../utils/llmManager');
 const { preparePromptMessages } = require('../../utils/promptBuilder');
-const { fetchAndProcessImage, analyzeImageWithGemini } = require('../../utils/geminiManager');
 const { resolveMemberFuzzy, extractReactionAndCleanReply } = require('../../utils/helpers');
+const {
+    getImageAttachments,
+    buildImageContext,
+    renderImageParts,
+    resolveReferencedMessage,
+} = require('../../utils/messageContext');
 const { OWNER_ID } = require('../../config');
 
 function filterChannelHistory(messages) {
@@ -33,54 +38,78 @@ module.exports = {
             const localTime = now.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }) + " " + now.toLocaleTimeString("id-ID");
             const userId = message.author.id;
 
-            let attachedImage = null;
-            if (message.attachments.size > 0) {
-                const firstAttachment = message.attachments.first();
-                if (firstAttachment.contentType?.startsWith('image/')) {
-                    attachedImage = firstAttachment;
-                }
+            // ── Konteks pesan yang direply ──────────────────────────────────
+            // Kalau user me-reply pesan lama, isi pesan itu ikut dibaca supaya
+            // bot paham konteks yang sedang dibahas, bukan cuma teks command.
+            const referencedMessage = await resolveReferencedMessage(message);
+            let replyContextPrompt = null;
+            if (referencedMessage) {
+                const refAuthor = referencedMessage.author?.username || 'seseorang';
+                const refText = (referencedMessage.content || '').trim();
+                const refHasImage = getImageAttachments(referencedMessage).length > 0;
+                const refBody = refText || (refHasImage ? '[mengirim gambar]' : '[pesan kosong]');
+                replyContextPrompt = {
+                    role: 'system',
+                    content:
+                        `User yang chat denganmu sekarang sedang membalas pesan lama dari ${refAuthor}:\n` +
+                        `"${refBody.slice(0, 400)}"\n\n` +
+                        `Gunakan pesan yang dibalas ini sebagai konteks utama, karena komentar user kemungkinan menanggapi isi pesan tersebut.`,
+                };
             }
 
+            // ── Konteks gambar (multimodal) ─────────────────────────────────
+            // Prioritas: lampiran pesan sekarang -> lampiran pesan yang direply
+            // -> gambar terbaru di riwayat channel. Model multimodal menerima
+            // gambar langsung sebagai image part tanpa OCR; model teks murni
+            // memakai deskripsi Gemini.
             const activeModel = getActiveChatModelInfo();
-            let imageProcessedData = null;
-            let imageDescription = null;
+            const imageCandidates = [];
 
-            if (attachedImage) {
-                if (activeModel.supportsVision) {
-                    try {
-                        imageProcessedData = await fetchAndProcessImage(attachedImage.url);
-                        console.log(`[Chat] Menggunakan vision bawaan model utama (${activeModel.model})`);
-                    } catch (fetchErr) {
-                        console.warn('[Chat] Gagal process image untuk direct vision, fallback ke Gemini adapter:', fetchErr.message);
-                        imageDescription = await analyzeImageWithGemini(attachedImage.url);
-                    }
-                } else {
-                    console.log(`[Chat] Model utama (${activeModel.model}) tidak support vision, melempar ke Gemini vision adapter/OCR...`);
-                    imageDescription = await analyzeImageWithGemini(attachedImage.url);
+            for (const attachment of getImageAttachments(message)) {
+                imageCandidates.push({
+                    attachment,
+                    label: `Gambar yang dikirim ${message.author.username} sekarang`,
+                });
+            }
+
+            if (referencedMessage) {
+                for (const attachment of getImageAttachments(referencedMessage)) {
+                    imageCandidates.push({
+                        attachment,
+                        label: `Gambar dari ${referencedMessage.author?.username || 'user'} pada pesan yang direply`,
+                    });
                 }
             }
+
+            const channelId = message.channel.id;
+            const chHistoryData = channelHistory.get(channelId);
+
+            if (chHistoryData && chHistoryData.length) {
+                for (const m of filterChannelHistory(chHistoryData).slice(-MAX_CHANNEL_CONTEXT).reverse()) {
+                    if (!Array.isArray(m.imageUrls)) continue;
+                    for (const url of m.imageUrls) {
+                        imageCandidates.push({
+                            attachment: { url },
+                            label: `Gambar dari ${m.username} di obrolan sebelumnya`,
+                        });
+                    }
+                }
+            }
+
+            const imageEntries = await buildImageContext(imageCandidates);
+            const imageParts = renderImageParts(imageEntries);
+
+            if (imageEntries.length) {
+                console.log(`[Chat] Menyertakan ${imageEntries.length} gambar ke prompt (model: ${activeModel.model}, vision: ${activeModel.supportsVision})`);
+            }
+
+            const imageDescriptions = imageEntries
+                .filter((entry) => entry.description)
+                .map((entry) => `${entry.label}: ${entry.description}`);
 
             let baseText = prompt || 'Liat gambar ini dong';
-            if (imageDescription) {
-                baseText = `${baseText}\n\n[Ada gambar: ${imageDescription}]`;
-            }
-
-            let userContent;
-            if (imageProcessedData) {
-                userContent = [
-                    {
-                        type: 'text',
-                        text: `${message.author.username} bilang: ${baseText}`,
-                    },
-                    {
-                        type: 'image_url',
-                        image_url: {
-                            url: imageProcessedData.dataUrl,
-                        },
-                    },
-                ];
-            } else {
-                userContent = `${message.author.username} bilang: ${baseText}`;
+            if (imageDescriptions.length) {
+                baseText = `${baseText}\n\n[Ada gambar:\n${imageDescriptions.join('\n')}]`;
             }
 
             const memory = state.memoryData || {};
@@ -118,8 +147,6 @@ module.exports = {
                 }
             }
 
-            const channelId = message.channel.id;
-            const chHistoryData = channelHistory.get(channelId);
             let channelContextPrompt = null;
 
             if (chHistoryData && chHistoryData.length) {
@@ -168,8 +195,24 @@ module.exports = {
             }
 
             const completion = await callLLMWithFallback(async (client, boundInfo) => {
-                let effectiveUserContent = userContent;
-                if (imageProcessedData && boundInfo?.model && !getActiveChatModelInfo().supportsVision && !boundInfo.model.includes('vision') && !boundInfo.model.includes('gemini') && !boundInfo.model.includes('gpt-4o')) {
+                // Model yang benar-benar melayani request bisa berbeda dari model
+                // aktif saat prompt dibangun (fallback router). Kalau model itu
+                // tidak vision capable, jangan kirim image part.
+                const boundModel = boundInfo?.model;
+                const boundSupportsVision = boundModel
+                    ? isVisionSupported(boundModel)
+                    : activeModel.supportsVision;
+
+                let effectiveUserContent;
+                if (imageParts.length && boundSupportsVision) {
+                    effectiveUserContent = [
+                        {
+                            type: 'text',
+                            text: `${message.author.username} bilang: ${baseText}`,
+                        },
+                        ...imageParts,
+                    ];
+                } else {
                     effectiveUserContent = `${message.author.username} bilang: ${baseText}`;
                 }
 
@@ -240,6 +283,7 @@ module.exports = {
                                 "Boleh nge-roast, tapi tetap asik dan mudah dimengerti."
                         },
                         ...(channelContextPrompt ? [channelContextPrompt] : []),
+                        ...(replyContextPrompt ? [replyContextPrompt] : []),
                         ...(mentionSystemPrompt ? [mentionSystemPrompt] : []),
                         ...(memoryPrompt ? [memoryPrompt] : []),
                         ...(globalMemoryPrompt ? [globalMemoryPrompt] : []),
@@ -266,7 +310,12 @@ module.exports = {
                 });
             }
 
-            const replyText = cleanText || rawReply;
+            // Kalau balasan model isinya HANYA tag reaction, jangan pernah kirim
+            // tag mentah ke Discord. Reaksinya sudah terpasang di atas.
+            const replyText = cleanText || '';
+            if (!replyText) {
+                return message.reply('Lagi ngeblank, coba tanya sekali lagi dong');
+            }
 
             try {
                 let chHistory = channelHistory.get(channelId);

@@ -143,6 +143,24 @@ async function testAll() {
         console.log(' -> PASS: fallback provider used with its own caller and base URL');
     }
 
+    console.log('\n[TEST] Checking chat command reply context helper...');
+    {
+        // chat.js memakai resolveReferencedMessage yang sama dengan auto-chat.
+        const mc = require('./src/utils/messageContext');
+        const repliedMsg = {
+            author: { username: 'rendi' },
+            content: 'joke lama yang lucu',
+            attachments: new Map([['a1', { url: 'https://cdn.discord/x.jpg', contentType: 'image/png' }]]),
+        };
+        const cmdMsg = { reference: { messageId: '999', message: repliedMsg } };
+
+        const ref = await mc.resolveReferencedMessage(cmdMsg);
+        assert.strictEqual(ref.author.username, 'rendi', 'Reply author must resolve');
+        assert.strictEqual(ref.content, 'joke lama yang lucu', 'Reply content must resolve');
+        assert.strictEqual(mc.getImageAttachments(ref).length, 1, 'Reply image must be detected');
+        console.log(' -> PASS: chat reply context resolves with image');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 
