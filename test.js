@@ -72,6 +72,77 @@ async function testAll() {
     assert.strictEqual(meta.replyTo?.username, 'udin', 'Referenced author must be stored in history meta');
     console.log(' -> PASS: messageContext helpers passed unit checks');
 
+    console.log('\n[TEST] Checking router model chain fallback (NINER_FALLBACK_MODEL)...');
+    const llm = require('./src/utils/llmManager');
+    const chain = llm.getRouterModelChain();
+    assert(chain.length >= 1, 'Router chain must contain at least the primary model');
+    assert.strictEqual(chain[0], llm.NINER_MODEL, 'Chain must start with the primary model');
+    if (llm.NINER_FALLBACK_MODEL) {
+        assert.strictEqual(chain[1], llm.NINER_FALLBACK_MODEL, 'Chain must include the router fallback model second');
+    }
+
+    {
+        const calls = [];
+        const okResult = (text) => ({ choices: [{ message: { content: text } }] });
+        const fail500 = () => { const err = new Error('upstream 500'); err.status = 500; return err; };
+
+        const routerPartial = async (fn) => fn({
+            chat: { completions: { create: async (opts) => {
+                calls.push(opts.model);
+                if (opts.model === llm.NINER_MODEL) throw fail500();
+                return okResult('fallback-router-answer');
+            } } },
+        });
+        const groqSpy = async () => { calls.push('GROQ'); return okResult('groq-answer'); };
+
+        const result = await llm.callLLMWithFallback(
+            async (client) => client.chat.completions.create({ model: 'x', messages: [] }),
+            { ninerCaller: routerPartial, groqCaller: groqSpy }
+        );
+        assert.strictEqual(result.choices[0].message.content, 'fallback-router-answer', 'Router fallback model must serve the request');
+        assert(!calls.includes('GROQ'), 'Groq must not be called when a router fallback model succeeds');
+        console.log(' -> PASS: router fallback model used before Groq');
+    }
+
+    console.log('\n[TEST] Checking fallback provider routing (separate base URL)...');
+    {
+        const nm = require('./src/utils/ninerManager');
+        const providerChain = llm.getRouterProviderChain();
+        assert(providerChain.length >= 1, 'Provider chain must not be empty');
+        assert.strictEqual(providerChain[0].provider, 'niner-primary', 'First entry must use the primary provider');
+
+        if (nm.isFallbackProviderAvailable()) {
+            const fallbackEntry = providerChain.find((e) => e.isFallbackProvider);
+            assert(fallbackEntry, 'Fallback provider entry must exist when configured');
+            assert.strictEqual(fallbackEntry.baseURL, nm.NINER_FALLBACK_BASE_URL, 'Fallback entry must use its own base URL');
+            assert.notStrictEqual(fallbackEntry.baseURL, nm.NINER_BASE_URL, 'Fallback base URL must differ from primary');
+        }
+
+        // Request harus diarahkan ke caller provider yang benar, bukan satu caller.
+        const trace = [];
+        const okResult = (text) => ({ choices: [{ message: { content: text } }] });
+        const fail500 = () => { const err = new Error('upstream 500'); err.status = 500; return err; };
+
+        const primaryCaller = async (fn) => {
+            trace.push('primary-caller');
+            return fn({ chat: { completions: { create: async () => { throw fail500(); } } } });
+        };
+        const fallbackCaller = async (fn) => {
+            trace.push('fallback-caller');
+            return fn({ chat: { completions: { create: async () => okResult('fallback-provider-answer') } } });
+        };
+        const groqSpy = async () => { trace.push('GROQ'); return okResult('groq-answer'); };
+
+        const res = await llm.callLLMWithFallback(
+            async (client) => client.chat.completions.create({ model: 'x', messages: [] }),
+            { ninerCaller: primaryCaller, ninerFallbackCaller: fallbackCaller, groqCaller: groqSpy }
+        );
+        assert.strictEqual(res.choices[0].message.content, 'fallback-provider-answer', 'Fallback provider must serve the request');
+        assert(trace.includes('fallback-caller'), 'Fallback provider caller must be invoked');
+        assert(!trace.includes('GROQ'), 'Groq must not be called while fallback provider works');
+        console.log(' -> PASS: fallback provider used with its own caller and base URL');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 
