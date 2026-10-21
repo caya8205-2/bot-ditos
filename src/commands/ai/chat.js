@@ -4,7 +4,7 @@ const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTO
 const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('../../utils/llmManager');
 const { preparePromptMessages } = require('../../utils/promptBuilder');
 const { fetchAndProcessImage, analyzeImageWithGemini } = require('../../utils/geminiManager');
-const { resolveMemberFuzzy } = require('../../utils/helpers');
+const { resolveMemberFuzzy, extractReactionAndCleanReply } = require('../../utils/helpers');
 const { OWNER_ID } = require('../../config');
 
 function filterChannelHistory(messages) {
@@ -253,11 +253,20 @@ module.exports = {
                 });
             });
 
-            const replyText = completion.choices?.[0]?.message?.content?.trim();
+            const rawReply = completion.choices?.[0]?.message?.content?.trim();
 
-            if (!replyText) {
+            if (!rawReply) {
                 return message.reply('Lagi ngeblank, coba tanya sekali lagi dong');
             }
+
+            const { reaction, cleanText } = extractReactionAndCleanReply(rawReply, message.guild);
+            if (reaction) {
+                message.react(reaction).catch((err) => {
+                    console.warn('[Chat] Gagal react:', err.message);
+                });
+            }
+
+            const replyText = cleanText || rawReply;
 
             try {
                 let chHistory = channelHistory.get(channelId);

@@ -1,7 +1,15 @@
 const { channelHistory, botActivityTracker, lastUserActivity } = require('../data/state');
 const state = require('../data/state');
-const { callLLMWithFallback, LLM_MODEL } = require('./llmManager');
+const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('./llmManager');
 const { preparePromptMessages } = require('./promptBuilder');
+const { extractReactionAndCleanReply } = require('./helpers');
+const {
+    getImageAttachments,
+    buildImageContext,
+    renderImageParts,
+    resolveReferencedMessage,
+    detectConversationTone,
+} = require('./messageContext');
 
 function filterChannelHistory(messages) {
     return messages.filter(m => {
@@ -18,6 +26,9 @@ const AUTO_CHAT_CONFIG = {
     replyChance: 30, // 30% chance bakal reply
     minMessagesBetweenReplies: 6,
     replyCooldown: 2 * 60 * 1000, // 2 menit
+    // Jendela debounce: pesan beruntun dari orang yang sama dianggap
+    // satu giliran bicara, bukan beberapa trigger terpisah.
+    burstWindowMs: 2500,
     idleChat: {
         enabled: false,
         minIdleTime: 20 * 60 * 1000, // 20 menit sepi
@@ -44,6 +55,12 @@ const AUTO_CHAT_CONFIG = {
     ],
 };
 
+// ── Guard anti-burst ────────────────────────────────────────────────────────
+// pendingBurst: menampung pesan beruntun per channel sebelum memanggil LLM.
+// inFlight: channel yang sedang generate, supaya tidak ada generate paralel.
+const pendingBurst = new Map();
+const inFlight = new Set();
+
 function shouldBotReply(message, textContent) {
     if (!AUTO_CHAT_CONFIG.enabled) return false;
 
@@ -53,6 +70,12 @@ function shouldBotReply(message, textContent) {
     if (AUTO_CHAT_CONFIG.blacklistedChannels.includes(channelId)) return false;
 
     if (message.author.bot) return false;
+
+    // Sedang generate untuk channel ini -> jangan spawn paralel.
+    if (inFlight.has(channelId)) {
+        console.log(`[AutoChat] [${message.channel.name || channelId}] Skip: masih generate balasan sebelumnya`);
+        return false;
+    }
 
     const lastActivity = botActivityTracker.get(channelId);
     if (lastActivity && Date.now() - lastActivity.lastMessage < AUTO_CHAT_CONFIG.replyCooldown) {
@@ -99,12 +122,79 @@ function shouldBotReply(message, textContent) {
     if (consecutiveCount >= 5) chance = Math.max(chance * 0.5, 5);
     else if (consecutiveCount >= 3) chance = Math.max(chance * 0.8, 8);
 
+    // Baca suasana: kalau channel sedang membahas hal serius dan bot tidak
+    // dipanggil langsung, jangan nimbrung dengan becanda.
+    const tone = detectConversationTone([
+        ...recentMessages.map((m) => m.content),
+        content,
+    ]);
+    if (tone.tone === 'serious' && !hasMention) {
+        chance = Math.max(chance * 0.2, 2);
+    }
+
     const roll = Math.random() * 100;
     const willReply = roll < chance;
 
-    console.log(`[AutoChat] [${message.channel.name || channelId}] MsgCount: ${activity.messageCount} | Triggers: ${hasTrigger ? matchedTriggers.join(', ') : 'none'} | Mention: ${hasMention} | Chance: ${chance.toFixed(1)}% | Roll: ${roll.toFixed(1)}% | Reply: ${willReply ? 'YES' : 'NO'}`);
+    console.log(`[AutoChat] [${message.channel.name || channelId}] MsgCount: ${activity.messageCount} | Triggers: ${hasTrigger ? matchedTriggers.join(', ') : 'none'} | Mention: ${hasMention} | Tone: ${tone.tone} | Chance: ${chance.toFixed(1)}% | Roll: ${roll.toFixed(1)}% | Reply: ${willReply ? 'YES' : 'NO'}`);
 
     return willReply;
+}
+
+/**
+ * Kumpulkan pesan beruntun dari author yang sama dalam satu jendela debounce,
+ * lalu generate satu balasan saja. Mencegah bot membalas berkali-kali saat user
+ * mengirim pikirannya dalam beberapa pesan terpisah.
+ */
+function scheduleAutoReply(message, textContent, { onSent } = {}) {
+    const channelId = message.channel.id;
+    const existing = pendingBurst.get(channelId);
+
+    const texts = existing ? existing.texts : [];
+    const incoming = (textContent || message.content || '').trim();
+    if (incoming) texts.push(incoming);
+
+    if (existing?.timer) clearTimeout(existing.timer);
+
+    const entry = {
+        texts,
+        latestMessage: message,
+        timer: null,
+        authorId: message.author.id,
+    };
+
+    entry.timer = setTimeout(async () => {
+        pendingBurst.delete(channelId);
+
+        if (inFlight.has(channelId)) {
+            console.log(`[AutoChat] [${message.channel.name || channelId}] Skip burst: channel masih in-flight`);
+            return;
+        }
+
+        inFlight.add(channelId);
+        // Reservasi cooldown lebih awal supaya pesan yang masuk selama proses
+        // generate tidak ikut memicu balasan baru.
+        botActivityTracker.set(channelId, { lastMessage: Date.now(), messageCount: 0 });
+
+        try {
+            const mergedText = entry.texts.join('\n').trim();
+            const reply = await generateAutoReply(entry.latestMessage, mergedText);
+            if (reply) {
+                await entry.latestMessage.channel.send(reply);
+                if (typeof onSent === 'function') onSent(reply);
+            } else {
+                // Tidak jadi balas -> lepas reservasi supaya channel tidak
+                // "terkunci" tanpa alasan.
+                botActivityTracker.set(channelId, { lastMessage: 0, messageCount: 0 });
+            }
+        } catch (err) {
+            console.error('[AutoChat] Gagal kirim auto-reply:', err);
+            botActivityTracker.set(channelId, { lastMessage: 0, messageCount: 0 });
+        } finally {
+            inFlight.delete(channelId);
+        }
+    }, AUTO_CHAT_CONFIG.burstWindowMs);
+
+    pendingBurst.set(channelId, entry);
 }
 
 async function generateAutoReply(message, textContent) {
@@ -118,11 +208,37 @@ async function generateAutoReply(message, textContent) {
         const chHistory = channelHistory.get(channelId) || [];
         const recentMessages = filterChannelHistory(chHistory).slice(-8);
 
+        // ── Konteks pesan yang direply ──────────────────────────────────────
+        // Kalau user me-reply pesan lama (misal joke), isi pesan itu ikut
+        // dibaca supaya bot paham apa yang sedang dikomentari.
+        const referencedMessage = await resolveReferencedMessage(message);
+        let replyContext = '';
+        if (referencedMessage) {
+            const refAuthor = referencedMessage.author?.username || 'seseorang';
+            const refText = (referencedMessage.content || '').trim();
+            const refHasImage = getImageAttachments(referencedMessage).length > 0;
+            const refBody = refText || (refHasImage ? '[mengirim gambar]' : '[pesan kosong]');
+            replyContext = `\nPesan yang sedang dibalas oleh ${message.author.username} (dari ${refAuthor}):\n"${refBody.slice(0, 400)}"\n`;
+        }
+
         const contextPrompt = recentMessages.length > 0
             ? recentMessages.map((m) => {
                 const text = m.content?.trim() || "";
                 if (/^\*.*\*$/.test(text)) return `${m.username}: [aksi RP]`;
-                return `${m.username}: ${m.content}`;
+
+                const bits = [];
+                if (m.replyTo?.messageId) {
+                    const target = m.replyTo.username ? `@${m.replyTo.username}` : 'pesan lain';
+                    const snippet = m.replyTo.content ? `: "${m.replyTo.content.slice(0, 120)}"` : '';
+                    bits.push(`(membalas ${target}${snippet})`);
+                }
+                if (Array.isArray(m.imageUrls) && m.imageUrls.length) {
+                    bits.push('[mengirim gambar]');
+                }
+
+                const suffix = bits.length ? ` ${bits.join(' ')}` : '';
+                const body = text || (bits.length ? '' : '[pesan kosong]');
+                return `${m.username}${suffix}: ${body}`.trimEnd();
             }).join("\n")
             : "Belum ada obrolan sebelumnya.";
 
@@ -138,6 +254,55 @@ async function generateAutoReply(message, textContent) {
         if (globalMemory?.notes?.length) {
             memoryContext += `\nInfo global server:\n` + globalMemory.notes.map(n => `- ${n.note}`).join('\n') + `\n`;
         }
+
+        // ── Konteks gambar (multimodal) ─────────────────────────────────────
+        // Prioritas: gambar pesan saat ini -> gambar pesan yang direply ->
+        // gambar terbaru di riwayat channel. Kalau model aktif multimodal,
+        // gambar dikirim langsung sebagai image part tanpa OCR (jalur yang
+        // sama dengan command d!chat). Kalau tidak, fallback ke Gemini adapter.
+        const imageCandidates = [];
+
+        for (const attachment of getImageAttachments(message)) {
+            imageCandidates.push({
+                attachment,
+                label: `Gambar yang dikirim ${message.author.username} sekarang`,
+            });
+        }
+
+        if (referencedMessage) {
+            for (const attachment of getImageAttachments(referencedMessage)) {
+                imageCandidates.push({
+                    attachment,
+                    label: `Gambar dari ${referencedMessage.author?.username || 'user'} pada pesan yang direply`,
+                });
+            }
+        }
+
+        for (const m of [...recentMessages].reverse()) {
+            if (!Array.isArray(m.imageUrls)) continue;
+            for (const url of m.imageUrls) {
+                imageCandidates.push({
+                    attachment: { url },
+                    label: `Gambar dari ${m.username} di obrolan sebelumnya`,
+                });
+            }
+        }
+
+        const imageEntries = await buildImageContext(imageCandidates);
+        const imageParts = renderImageParts(imageEntries);
+
+        if (imageEntries.length) {
+            console.log(`[AutoChat] Menyertakan ${imageEntries.length} gambar ke prompt (model: ${getActiveChatModelInfo().model})`);
+        }
+
+        // Sinyal suasana untuk instruksi tambahan.
+        const tone = detectConversationTone([
+            ...recentMessages.map((m) => m.content),
+            userText,
+        ]);
+        const toneInstruction = tone.tone === 'serious'
+            ? "Suasana obrolan terakhir terasa SERIUS atau sensitif. Turunkan nada bercanda: jangan nge-roast, jangan nyeletuk absurd, jangan nyolot. Tanggapi dengan empatik dan wajar, atau kalau memang tidak ada yang perlu ditambahkan, diam saja."
+            : "Suasana obrolan terakhir santai. Kamu boleh nimbrung dengan nada biasa, tetap baca situasi sebelum nyeletuk.";
 
             const completion = await callLLMWithFallback(async (client) => {
             return await client.chat.completions.create({
@@ -173,8 +338,15 @@ async function generateAutoReply(message, textContent) {
                             "- Gak usah nyebut kalau lu bot kecuali ditanya\n" +
                             "- Keep it SHORT (1-3 kalimat max)\n" +
                             "- Boleh cuma emoji reaction kalau emang gak ada yang perlu dikomen\n" +
+                            "- Kadang kamu boleh memberi reaction emoji ke pesan user dengan tag `[react: <emoji>]` (misal `[react: <:bwakakak2:1299912831826788385>]` atau `[react: 🗿]`). Cukup sesekali saja kalau pas, jangan tiap saat.\n" +
                             "- Kalau topiknya technical (coding, troubleshooting), boleh kasih insight singkat\n" +
-                            "- Kalau casual chat, ya nyantai aja, gausah kaku\n\n" +
+                            "- Kalau casual chat, ya nyantai aja, gausah kaku\n" +
+                            "- Kalau ada gambar (baik dari pesan sekarang, pesan yang direply, atau obrolan sebelumnya), komentari isinya secara natural. Jangan bilang tidak bisa melihat gambar.\n\n" +
+
+                            "BACA RUANGAN:\n" +
+                            "- " + toneInstruction + "\n" +
+                            "- Kalau obrolan sedang ramai dan banyak orang bicara, jangan balas setiap pesan; cukup satu komentar yang nyambung.\n" +
+                            "- Kalau ada yang sedang curhat, kena masalah, atau bahas hal berat, prioritaskan empati di atas jokes.\n\n" +
 
                             "Style:\n" +
                             "- Pake 'gue/gua/gwa' dan 'lo/lu/luwh'\n" +
@@ -182,13 +354,22 @@ async function generateAutoReply(message, textContent) {
                             "- Boleh nge-roast dikit, tapi jangan toxic\n\n" +
 
                             memoryContext +
+                            (replyContext ? "\n" + replyContext : "") +
 
                             "\nObrolan terakhir di channel:\n" +
                             contextPrompt
                     },
                     {
                         role: 'user',
-                        content: `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`
+                        content: imageParts.length
+                            ? [
+                                {
+                                    type: 'text',
+                                    text: `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`,
+                                },
+                                ...imageParts,
+                            ]
+                            : `Ini pesan terbaru dari ${message.author.username}:\n"${userText}"\n\nReply secara natural dan singkat.`
                     }
                 ], { label: 'auto-chat' }),
                 temperature: 0.85,
@@ -196,8 +377,17 @@ async function generateAutoReply(message, textContent) {
             });
         });
 
-        const reply = completion.choices?.[0]?.message?.content?.trim();
-        if (reply && reply.length >= 2) return reply;
+        const rawReply = completion.choices?.[0]?.message?.content?.trim();
+        if (!rawReply) return null;
+
+        const { reaction, cleanText } = extractReactionAndCleanReply(rawReply, message.guild);
+        if (reaction) {
+            message.react(reaction).catch((err) => {
+                console.warn('[AutoChat] Gagal react:', err.message);
+            });
+        }
+
+        if (cleanText && cleanText.length >= 2) return cleanText;
         return null;
 
     } catch (e) {
@@ -339,4 +529,11 @@ function startIdleChecker(client) {
     }, 5 * 60 * 1000);
 }
 
-module.exports = { shouldBotReply, generateAutoReply, sendIdleMessage, startIdleChecker, AUTO_CHAT_CONFIG };
+module.exports = {
+    shouldBotReply,
+    generateAutoReply,
+    scheduleAutoReply,
+    sendIdleMessage,
+    startIdleChecker,
+    AUTO_CHAT_CONFIG,
+};

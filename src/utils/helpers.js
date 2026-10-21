@@ -296,7 +296,7 @@ async function saveTriviaScore(data) {
     await fsp.writeFile(TRIVIA_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
 }
 // CHANNEL HISTORY helpers
-function saveToChannelHistory(channelId, content, username = "Bot Ditos", role = "assistant") {
+function saveToChannelHistory(channelId, content, username = "Bot Ditos", role = "assistant", meta = null) {
     try {
         let chHistory = channelHistory.get(channelId);
         if (!chHistory) {
@@ -312,11 +312,24 @@ function saveToChannelHistory(channelId, content, username = "Bot Ditos", role =
             else textContent = JSON.stringify(content).substring(0, 500);
         }
 
-        chHistory.push({
+        const entry = {
             role: role,
             username: username,
             content: textContent
-        });
+        };
+
+        // Metadata opsional (URL gambar, pesan yang direply) supaya auto-chat
+        // bisa "melihat" ulang gambar dari riwayat dan paham konteks reply.
+        if (meta && typeof meta === 'object') {
+            if (Array.isArray(meta.imageUrls) && meta.imageUrls.length) {
+                entry.imageUrls = meta.imageUrls.slice(0, 3);
+            }
+            if (meta.replyTo && meta.replyTo.messageId) {
+                entry.replyTo = meta.replyTo;
+            }
+        }
+
+        chHistory.push(entry);
 
         if (chHistory.length > MAX_CHANNEL_HISTORY) {
             chHistory.splice(0, chHistory.length - MAX_CHANNEL_HISTORY);
@@ -464,6 +477,48 @@ async function searchWeb(query) { // Google search pake API Google CSE
     }));
 }
 
+// ponytail: In-band tag parsing [react: emoji]; upgrade to structured tool-call / JSON schema when using function-calling capable models.
+function extractReactionAndCleanReply(replyText, guild = null) {
+    if (!replyText || typeof replyText !== 'string') {
+        return { reaction: null, cleanText: replyText };
+    }
+
+    const match = replyText.match(/\[react(?:ion)?:\s*([^\]]+)\]/i);
+    const cleanText = replyText.replace(/\[react(?:ion)?:\s*[^\]]+\]/gi, '').trim();
+
+    if (!match) {
+        return { reaction: null, cleanText };
+    }
+
+    const rawEmoji = match[1].replace(/[`'"]/g, '').trim();
+    if (!rawEmoji || rawEmoji.toLowerCase() === 'none' || rawEmoji.toLowerCase() === 'null') {
+        return { reaction: null, cleanText };
+    }
+
+    // 1. Custom emoji with ID: <:name:id> or <a:name:id> or name:id
+    const customMatch = rawEmoji.match(/^(?:<a?:)?([a-zA-Z0-9_]+):(\d+)>?$/);
+    if (customMatch) {
+        return { reaction: customMatch[2], cleanText };
+    }
+
+    // 2. Pure emoji ID
+    if (/^\d{17,20}$/.test(rawEmoji)) {
+        return { reaction: rawEmoji, cleanText };
+    }
+
+    // 3. Custom emoji name without ID: :name: or name
+    const nameMatch = rawEmoji.match(/^:?([a-zA-Z0-9_]+):?$/);
+    if (nameMatch && guild) {
+        const found = guild.emojis?.cache?.find(
+            (e) => e.name.toLowerCase() === nameMatch[1].toLowerCase()
+        );
+        if (found) return { reaction: found.id, cleanText };
+    }
+
+    // 4. Unicode emoji (e.g. 🗿, 💀, 😂)
+    return { reaction: rawEmoji, cleanText };
+}
+
 module.exports = {
     normalizeTrivia,
     levenshtein,
@@ -486,5 +541,6 @@ module.exports = {
     fetchGroqLimits,
     getDailyResetInfo,
     searchWeb,
-    reportErrorToDiscord
+    reportErrorToDiscord,
+    extractReactionAndCleanReply
 };

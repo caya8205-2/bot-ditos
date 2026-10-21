@@ -1,7 +1,8 @@
 const state = require('../data/state');
 const { activeTrivia, triviaTimers, botActivityTracker, lastUserActivity } = state;
 const { saveToChannelHistory, isTriviaCorrect, awardTriviaXP, getLevelFromXP, normalizeTrivia, saveTriviaScore, replyAndSave, reportErrorToDiscord } = require('../utils/helpers');
-const { shouldBotReply, generateAutoReply } = require('../utils/autoChat');
+const { shouldBotReply, scheduleAutoReply } = require('../utils/autoChat');
+const { resolveReferencedMessage, buildHistoryMeta } = require('../utils/messageContext');
 const { getPrefix } = require('../utils/settingsManager');
 const { OWNER_ID } = require('../config');
 const { formatLogTimestamp } = require('../utils/logger');
@@ -79,7 +80,15 @@ module.exports = {
         if (!cleanContent.toLowerCase().startsWith('d!')) {
             if (!message.author.bot || isAllowedBot) {
                 const role = message.author.bot ? 'assistant' : 'user';
-                saveToChannelHistory(channelId, cleanContent, message.author.username, role);
+                // Simpan metadata gambar & konteks reply ke riwayat, supaya
+                // auto-chat bisa "melihat" gambar lama dan paham pesan yang
+                // sedang dibalas meskipun isinya sudah lewat dari window chat.
+                let referencedForHistory = null;
+                if (message.reference?.messageId) {
+                    referencedForHistory = await resolveReferencedMessage(message);
+                }
+                const historyMeta = buildHistoryMeta(message, referencedForHistory);
+                saveToChannelHistory(channelId, cleanContent, message.author.username, role, historyMeta);
             }
         }
 
@@ -106,19 +115,14 @@ module.exports = {
         }
 
         if (shouldBotReply(message, cleanContent)) {
-            try {
-                const reply = await generateAutoReply(message, cleanContent);
-                if (reply) {
-                    await message.channel.send(reply);
-                    botActivityTracker.set(channelId, {
-                        lastMessage: Date.now(),
-                        messageCount: 0
-                    });
+            // Debounce: pesan beruntun dari orang yang sama digabung jadi satu
+            // giliran, lalu dibalas sekali. Mencegah bot membalas 5x saat user
+            // mengirim pikirannya dalam 5 pesan terpisah.
+            scheduleAutoReply(message, cleanContent, {
+                onSent: (reply) => {
                     saveToChannelHistory(channelId, reply, client.user.username, 'assistant');
-                }
-            } catch (err) {
-                console.error('[AutoChat] Gagal kirim auto-reply:', err);
-            }
+                },
+            });
         }
     },
 };

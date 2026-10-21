@@ -47,7 +47,32 @@ async function testAll() {
     assert(spotInfo.title && spotInfo.artists && spotInfo.artists.length > 0, 'Track info must have title and artists');
     console.log(' -> PASS: getTrackInfo resolved:', spotInfo.title, 'by', spotInfo.artists.join(', '));
 
-    console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY (YouTube + Spotify Direct).');
+    console.log('\n[TEST] Checking extractReactionAndCleanReply...');
+    const { extractReactionAndCleanReply } = require('./src/utils/helpers');
+    const parsedReact = extractReactionAndCleanReply('[react: <:bwakakak2:1299912831826788385>] wkwk kocak');
+    assert.strictEqual(parsedReact.reaction, '1299912831826788385', 'Must extract emoji ID');
+    assert.strictEqual(parsedReact.cleanText, 'wkwk kocak', 'Must strip reaction tag from reply text');
+    console.log(' -> PASS: extractReactionAndCleanReply parsed and stripped correctly');
+
+    console.log('\n[TEST] Checking messageContext (tone, image detection, history meta)...');
+    const mc = require('./src/utils/messageContext');
+    const seriousCase = mc.detectConversationTone(['kakek baru meninggal tadi pagi', 'sedih banget']);
+    assert.strictEqual(seriousCase.tone, 'serious', 'Must detect serious conversation tone');
+    const humorCase = mc.detectConversationTone(['wkwkwk anjir receh banget', '🗿']);
+    assert.strictEqual(humorCase.tone, 'humor', 'Must detect humor conversation tone');
+    assert.strictEqual(mc.isImageAttachment({ contentType: 'image/jpeg' }), true, 'PNG/JPEG must be recognized as image');
+    assert.strictEqual(mc.isImageAttachment({ name: 'foto.PNG' }), true, 'Fallback by extension must work');
+    assert.strictEqual(mc.isImageAttachment({ name: 'video.mp4' }), false, 'Non-image must be rejected');
+
+    const meta = mc.buildHistoryMeta({
+        attachments: new Map([['1', { url: 'https://cdn.discord/a.jpg', contentType: 'image/jpeg' }]]),
+        reference: { messageId: '123' },
+    }, { author: { username: 'udin' }, content: 'pesan asal' });
+    assert.strictEqual(meta.imageUrls?.[0], 'https://cdn.discord/a.jpg', 'Image URLs must be stored in history meta');
+    assert.strictEqual(meta.replyTo?.username, 'udin', 'Referenced author must be stored in history meta');
+    console.log(' -> PASS: messageContext helpers passed unit checks');
+
+    console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 
 testAll().catch((err) => {
