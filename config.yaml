@@ -1,0 +1,19 @@
+model:
+  default: ollama/nemotron-3-ultra
+  provider: 9router-local
+providers:
+  - name: 9router-local
+    base_url: http://127.0.0.1:20128/v1
+    key_env: NINER_API_KEY
+  - name: 9router-office
+    base_url: https://router.nalarin.ai/v1
+    key_env: NINER_API_KEY_FALLBACK
+  - name: zenmux
+    base_url: https://zenmux.ai/api/v1
+    key_env: ZENMUX_API_KEY
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP_1, GROQ_API_KEY_BACKUP_2
+fallback_model:
+  provider: 9router-local
+  model: ag/gemini-3.8-flash-high

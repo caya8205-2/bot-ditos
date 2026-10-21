@@ -10,8 +10,9 @@ const {
 } = require('./groqManager');
 const {
     NINER_BASE_URL,
-    NINER_MODEL,
-    NINER_FALLBACK_MODEL,
+    getNinerModel,
+    getNinerProvider,
+    getNinerFallbackModel,
     NINER_FALLBACK_BASE_URL,
     NINER_TIMEOUT_MS,
     isNinerAvailable,
@@ -43,9 +44,10 @@ const modelCooldownUntil = new Map();
 const lastModelErrors = new Map();
 
 function getRouterModelChain() {
-    const chain = [NINER_MODEL];
-    if (NINER_FALLBACK_MODEL && NINER_FALLBACK_MODEL !== NINER_MODEL) {
-        chain.push(NINER_FALLBACK_MODEL);
+    const primary = getNinerModel();
+    const chain = [primary];
+    if (getNinerFallbackModel() && getNinerFallbackModel() !== primary) {
+        chain.push(getNinerFallbackModel());
     }
     return chain.filter(Boolean);
 }
@@ -55,17 +57,19 @@ function getRouterModelChain() {
  * base URL dan API key sendiri kalau dikonfigurasi berbeda dari utama.
  */
 function getRouterProviderChain() {
+    const primaryModel = getNinerModel();
+    const primaryProvider = getNinerProvider();
     const chain = [{
-        model: NINER_MODEL,
+        model: primaryModel,
         provider: 'niner-primary',
-        baseURL: NINER_BASE_URL,
+        baseURL: primaryProvider.baseURL,
         isFallbackProvider: false,
     }];
 
-    if (NINER_FALLBACK_MODEL && NINER_FALLBACK_MODEL !== NINER_MODEL) {
+    if (getNinerFallbackModel() && getNinerFallbackModel() !== primaryModel) {
         const useDedicatedProvider = isFallbackProviderAvailable();
         chain.push({
-            model: NINER_FALLBACK_MODEL,
+            model: getNinerFallbackModel(),
             provider: useDedicatedProvider ? 'niner-fallback' : 'niner-primary',
             baseURL: useDedicatedProvider ? NINER_FALLBACK_BASE_URL : NINER_BASE_URL,
             isFallbackProvider: useDedicatedProvider,
@@ -137,7 +141,7 @@ async function callRouterChain(requestFn, options = {}) {
             lastModelErrors.delete(model);
             if (isFallbackProvider) {
                 console.log(`[LLM] Request dilayani provider fallback ${baseURL} dengan model ${model}`);
-            } else if (model !== NINER_MODEL) {
+            } else if (model !== getNinerModel()) {
                 console.log(`[LLM] Request dilayani model fallback router: ${model}`);
             }
             return result;
@@ -259,7 +263,7 @@ async function callNinerFallback(requestFn, options = {}) {
     }
 
     try {
-        // Coba model utama router dulu, lalu NINER_FALLBACK_MODEL, baru Groq.
+        // Coba model utama router dulu, lalu model fallback, baru Groq.
         return await callRouterChain(requestFn, options);
     } catch (routerError) {
         if (routerError.connectivityFailure) {
@@ -301,7 +305,7 @@ function getActiveChatModelInfo() {
                 baseURL: active.baseURL,
                 model: active.model,
                 supportsVision: isVisionSupported(active.model),
-                isRouterFallback: active.model !== NINER_MODEL,
+                isRouterFallback: active.model !== getNinerModel(),
                 isFallbackProvider: active.isFallbackProvider,
             };
         }
@@ -326,28 +330,28 @@ function getLLMProviderStatus() {
         primary: {
             provider: 'niner-primary',
             baseURL: NINER_BASE_URL,
-            model: NINER_MODEL,
+            model: getNinerModel(),
             timeoutMs: NINER_TIMEOUT_MS,
             available: isNinerAvailable(),
-            onCooldown: isModelOnCooldown(NINER_MODEL),
-            unavailableUntil: modelCooldownUntil.get(NINER_MODEL) || 0,
-            lastError: lastModelErrors.get(NINER_MODEL)?.message || null,
-            supportsVision: isVisionSupported(NINER_MODEL),
+            onCooldown: isModelOnCooldown(getNinerModel()),
+            unavailableUntil: modelCooldownUntil.get(getNinerModel()) || 0,
+            lastError: lastModelErrors.get(getNinerModel())?.message || null,
+            supportsVision: isVisionSupported(getNinerModel()),
         },
         secondary: {
             provider: isFallbackProviderAvailable() ? 'niner-fallback' : 'niner-primary',
             baseURL: isFallbackProviderAvailable() ? NINER_FALLBACK_BASE_URL : NINER_BASE_URL,
-            model: NINER_FALLBACK_MODEL || null,
+            model: getNinerFallbackModel() || null,
             timeoutMs: NINER_TIMEOUT_MS,
-            configured: Boolean(NINER_FALLBACK_MODEL),
+            configured: Boolean(getNinerFallbackModel()),
             dedicatedProvider: isFallbackProviderAvailable(),
-            available: Boolean(NINER_FALLBACK_MODEL) && isNinerAvailable(),
-            onCooldown: NINER_FALLBACK_MODEL ? isModelOnCooldown(NINER_FALLBACK_MODEL) : false,
-            unavailableUntil: NINER_FALLBACK_MODEL ? (modelCooldownUntil.get(NINER_FALLBACK_MODEL) || 0) : 0,
-            lastError: NINER_FALLBACK_MODEL
-                ? (lastModelErrors.get(NINER_FALLBACK_MODEL)?.message || null)
+            available: Boolean(getNinerFallbackModel()) && isNinerAvailable(),
+            onCooldown: getNinerFallbackModel() ? isModelOnCooldown(getNinerFallbackModel()) : false,
+            unavailableUntil: getNinerFallbackModel() ? (modelCooldownUntil.get(getNinerFallbackModel()) || 0) : 0,
+            lastError: getNinerFallbackModel()
+                ? (lastModelErrors.get(getNinerFallbackModel())?.message || null)
                 : null,
-            supportsVision: isVisionSupported(NINER_FALLBACK_MODEL),
+            supportsVision: isVisionSupported(getNinerFallbackModel()),
         },
         router: {
             baseURL: NINER_BASE_URL,
@@ -374,8 +378,8 @@ function getLLMProviderStatus() {
 
 module.exports = {
     LLM_MODEL: LOCAL_LLM_MODEL,
-    NINER_MODEL,
-    NINER_FALLBACK_MODEL,
+    getNinerModel,
+    getNinerFallbackModel,
     NINER_FALLBACK_COOLDOWN_MS,
     GROQ_FALLBACK_MODEL,
     LOCAL_LLM_FALLBACK_COOLDOWN_MS,

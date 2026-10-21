@@ -1,0 +1,37 @@
+# Konfigurasi bot (bukan credentials).
+#
+# Prinsipnya: file ini menyimpan pilihan model dan provider, sedangkan .env
+# hanya menyimpan credentials (API key, token). Jadi mengganti model cukup
+# lewat d!model atau edit file ini, tanpa menyentuh .env dan tanpa restart.
+#
+# key_env boleh berisi beberapa nama variabel dipisah koma; yang pertama terisi
+# yang dipakai (berguna untuk rotasi key).
+
+model:
+  # Model yang dipakai untuk chat.
+  default: ollama/nemotron-3-ultra
+  # Provider tempat model di atas berada (harus cocok dengan salah satu name
+  # di daftar providers).
+  provider: 9router-local
+
+providers:
+  - name: 9router-local
+    base_url: http://127.0.0.1:20128/v1
+    key_env: NINER_API_KEY
+
+  - name: 9router-office
+    base_url: https://router.nalarin.ai/v1
+    key_env: NINER_API_KEY_FALLBACK
+
+  - name: zenmux
+    base_url: https://zenmux.ai/api/v1
+    key_env: ZENMUX_API_KEY
+
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP_1, GROQ_API_KEY_BACKUP_2
+
+# Model cadangan kalau model utama gagal.
+fallback_model:
+  provider: 9router-local
+  model: ag/gemini-3.8-flash-high

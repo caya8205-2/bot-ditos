@@ -13,10 +13,60 @@ const NINER_BASE_URL = normalizeBaseURL(
     readEnv('NINER_BASE_URL', '9ROUTER_BASE_URL')
 );
 const NINER_API_KEY = readEnv('NINER_API_KEY', '9ROUTER_API_KEY');
-const NINER_MODEL = readEnv('NINER_MODEL', '9ROUTER_MODEL') || 'auto';
-// Model cadangan di router yang sama. Dicoba sebelum jatuh ke provider lain,
-// supaya satu model yang sedang down tidak langsung membuang request ke Groq.
-const NINER_FALLBACK_MODEL = readEnv('NINER_FALLBACK_MODEL', '9ROUTER_FALLBACK_MODEL') || '';
+
+/**
+ * Model aktif dibaca dari config.yaml lewat botConfig, dengan env sebagai
+ * cadangan. Sengaja berupa fungsi, bukan konstanta, supaya model bisa diganti
+ * saat bot berjalan tanpa restart.
+ */
+function getNinerModel() {
+    try {
+        const botConfig = require('./botConfig');
+        const fromConfig = botConfig.getActiveModel();
+        if (fromConfig) return fromConfig;
+    } catch {
+        // botConfig belum tersedia (misal saat test terisolasi).
+    }
+    return readEnv('NINER_MODEL', '9ROUTER_MODEL') || 'auto';
+}
+
+/**
+ * Base URL dan API key provider aktif. Kalau config.yaml punya daftar provider,
+ * nilai dari sana yang dipakai; kalau tidak, jatuh ke env lama.
+ */
+function getNinerProvider() {
+    try {
+        const botConfig = require('./botConfig');
+        const provider = botConfig.getActiveProvider();
+        if (provider?.base_url) {
+            return {
+                baseURL: normalizeBaseURL(provider.base_url),
+                apiKey: provider.apiKey || NINER_API_KEY,
+                name: provider.name,
+            };
+        }
+    } catch {
+        // abaikan, pakai env
+    }
+    return { baseURL: NINER_BASE_URL, apiKey: NINER_API_KEY, name: 'env-default' };
+}
+
+/**
+ * Model cadangan di router. Diambil dari config.yaml (fallback_model.model),
+ * dengan env NINER_FALLBACK_MODEL sebagai cadangan supaya konfigurasi lama
+ * tetap jalan.
+ */
+function getNinerFallbackModel() {
+    try {
+        const botConfig = require('./botConfig');
+        const cfg = botConfig.getConfig();
+        const fromConfig = cfg.fallback_model?.model;
+        if (fromConfig) return fromConfig;
+    } catch {
+        // abaikan
+    }
+    return readEnv('NINER_FALLBACK_MODEL', '9ROUTER_FALLBACK_MODEL') || '';
+}
 
 // Provider fallback terpisah (base URL + API key sendiri). Dipakai kalau model
 // cadangan di atas di-set untuk endpoint yang berbeda dari provider utama.
@@ -35,21 +85,23 @@ const NINER_TIMEOUT_MS = Number(
 ) || 120000;
 
 let ninerClient = null;
+let ninerClientBaseURL = null;
 let ninerFallbackClient = null;
 
 function isNinerAvailable() {
-    return Boolean(NINER_BASE_URL);
+    return Boolean(getNinerProvider().baseURL);
 }
 
 /**
  * Provider fallback punya base URL sendiri dan berbeda dari provider utama.
  */
 function isFallbackProviderDistinct() {
-    return Boolean(NINER_FALLBACK_BASE_URL) && NINER_FALLBACK_BASE_URL !== NINER_BASE_URL;
+    return Boolean(NINER_FALLBACK_BASE_URL) &&
+        NINER_FALLBACK_BASE_URL !== getNinerProvider().baseURL;
 }
 
 function isFallbackProviderAvailable() {
-    if (!NINER_FALLBACK_MODEL) return false;
+    if (!getNinerFallbackModel()) return false;
     if (!NINER_FALLBACK_BASE_URL) return false;
     return isFallbackProviderDistinct();
 }
@@ -64,12 +116,16 @@ function buildClient(apiKey, baseURL) {
 }
 
 function getNinerClient() {
-    if (!isNinerAvailable()) {
+    const provider = getNinerProvider();
+    if (!provider.baseURL) {
         throw new Error('Niner fallback tidak tersedia karena base URL belum dikonfigurasi.');
     }
 
-    if (!ninerClient) {
-        ninerClient = buildClient(NINER_API_KEY, NINER_BASE_URL);
+    // Client di-cache per base URL, supaya ganti provider saat runtime
+    // langsung memakai client baru tanpa restart.
+    if (!ninerClient || ninerClientBaseURL !== provider.baseURL) {
+        ninerClient = buildClient(provider.apiKey, provider.baseURL);
+        ninerClientBaseURL = provider.baseURL;
     }
 
     return ninerClient;
@@ -95,7 +151,7 @@ async function callNiner(requestFn) {
         return await requestFn(getNinerClient());
     } catch (error) {
         const reason = error?.error?.message || error?.message || 'Unknown error';
-        throw new Error(`Niner fallback gagal di ${NINER_BASE_URL}: ${reason}`, {
+        throw new Error(`Niner fallback gagal di ${getNinerProvider().baseURL}: ${reason}`, {
             cause: error,
         });
     }
@@ -115,8 +171,9 @@ async function callNinerFallbackProvider(requestFn) {
 module.exports = {
     NINER_BASE_URL,
     NINER_API_KEY,
-    NINER_MODEL,
-    NINER_FALLBACK_MODEL,
+    getNinerModel,
+    getNinerProvider,
+    getNinerFallbackModel,
     NINER_FALLBACK_BASE_URL,
     NINER_FALLBACK_API_KEY,
     NINER_TIMEOUT_MS,

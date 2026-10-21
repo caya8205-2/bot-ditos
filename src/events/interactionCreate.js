@@ -7,6 +7,29 @@ const { ButtonStyle } = require('discord.js');
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
+        // Selector model (d!model) memakai select menu dan tombol sendiri.
+        if (interaction.isButton() || interaction.isStringSelectMenu()) {
+            const id = interaction.customId || '';
+            if (id.startsWith('model_')) {
+                const command = client.commands?.get('model');
+                if (command?.handleInteraction) {
+                    try {
+                        const handled = await command.handleInteraction(interaction);
+                        if (handled) return;
+                    } catch (error) {
+                        console.error('[Model] Gagal menangani interaksi:', error.message);
+                        if (!interaction.replied && !interaction.deferred) {
+                            await interaction.reply({
+                                content: `❌ Error: ${error.message}`,
+                                ephemeral: true,
+                            }).catch(() => {});
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
         if (!interaction.isButton()) return;
 
         const id = interaction.customId;

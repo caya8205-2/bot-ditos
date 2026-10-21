@@ -5,7 +5,7 @@ const {
     LOCAL_LLM_TIMEOUT_MS,
 } = require('../../utils/localLLMManager');
 const {
-    NINER_MODEL,
+    getNinerModel,
     NINER_FALLBACK_COOLDOWN_MS,
     GROQ_FALLBACK_MODEL,
     LOCAL_LLM_FALLBACK_COOLDOWN_MS,
@@ -29,7 +29,7 @@ module.exports = {
                 { name: 'Model lokal', value: `\`${LOCAL_LLM_MODEL}\``, inline: true },
                 { name: 'Timeout', value: `${LOCAL_LLM_TIMEOUT_MS} ms`, inline: true },
                 { name: 'Chain router', value: routerChain, inline: false },
-                { name: 'Model utama', value: `\`${NINER_MODEL}\`\n\`${status.primary.baseURL}\``, inline: true },
+                { name: 'Model utama', value: `\`${getNinerModel()}\`\n\`${status.primary.baseURL}\``, inline: true },
                 { name: 'Utama cooldown', value: status.primary.onCooldown ? 'Ya' : 'Tidak', inline: true },
                 { name: 'Model fallback', value: status.secondary.configured ? `\`${status.secondary.model}\`\n\`${status.secondary.baseURL}\`` : 'Tidak diset', inline: true },
                 { name: 'Provider terpisah', value: status.secondary.dedicatedProvider ? 'Ya' : 'Tidak (pakai base URL utama)', inline: true },

@@ -81,9 +81,9 @@ async function testAll() {
     const llm = require('./src/utils/llmManager');
     const chain = llm.getRouterModelChain();
     assert(chain.length >= 1, 'Router chain must contain at least the primary model');
-    assert.strictEqual(chain[0], llm.NINER_MODEL, 'Chain must start with the primary model');
-    if (llm.NINER_FALLBACK_MODEL) {
-        assert.strictEqual(chain[1], llm.NINER_FALLBACK_MODEL, 'Chain must include the router fallback model second');
+    assert.strictEqual(chain[0], llm.getNinerModel(), 'Chain must start with the primary model');
+    if (llm.getNinerFallbackModel()) {
+        assert.strictEqual(chain[1], llm.getNinerFallbackModel(), 'Chain must include the router fallback model second');
     }
 
     {
@@ -94,7 +94,7 @@ async function testAll() {
         const routerPartial = async (fn) => fn({
             chat: { completions: { create: async (opts) => {
                 calls.push(opts.model);
-                if (opts.model === llm.NINER_MODEL) throw fail500();
+                if (opts.model === llm.getNinerModel()) throw fail500();
                 return okResult('fallback-router-answer');
             } } },
         });
@@ -106,7 +106,7 @@ async function testAll() {
         const fallbackProviderSpy = async (fn) => fn({
             chat: { completions: { create: async (opts) => {
                 calls.push(opts.model);
-                if (opts.model === llm.NINER_MODEL) throw fail500();
+                if (opts.model === llm.getNinerModel()) throw fail500();
                 return okResult('fallback-router-answer');
             } } },
         });
@@ -243,6 +243,37 @@ async function testAll() {
         assert(typeof gm.analyzeImageWithGemini === 'function', 'Wrapper lama harus tetap ada');
         assert.strictEqual(gm.describeImage, vm.describeImage, 'Wrapper harus meneruskan ke visionManager');
         console.log(' -> PASS: vision manager generik dan wrapper kompatibilitas benar');
+    }
+
+    console.log('\n[TEST] Checking config.yaml runtime model switching...');
+    {
+        const botConfig = require('./src/utils/botConfig');
+        const llm = require('./src/utils/llmManager');
+
+        // Provider dari config.yaml harus terbaca lengkap.
+        const providers = botConfig.getProviders();
+        assert(Array.isArray(providers), 'providers harus array');
+        assert(providers.length > 0, 'config.yaml harus punya minimal satu provider');
+        providers.forEach((p) => {
+            assert(p.name && p.base_url, 'Setiap provider butuh name dan base_url');
+        });
+        console.log(` -> PASS: ${providers.length} provider terbaca dari config.yaml`);
+
+        // Ganti model saat runtime harus langsung terlihat di llmManager.
+        const original = botConfig.getActiveModel();
+        const probeModel = 'uji/runtime-switch';
+        botConfig.setActiveModel(probeModel, null, false);
+        assert.strictEqual(botConfig.getActiveModel(), probeModel, 'Model aktif harus berubah');
+        assert.strictEqual(
+            llm.getActiveChatModelInfo().model,
+            probeModel,
+            'llmManager harus memakai model baru tanpa restart'
+        );
+
+        // Kembalikan ke semula supaya test tidak mengubah perilaku bot.
+        botConfig.setActiveModel(original, null, false);
+        assert.strictEqual(botConfig.getActiveModel(), original, 'Model harus bisa dikembalikan');
+        console.log(' -> PASS: ganti model runtime tanpa restart');
     }
 
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
