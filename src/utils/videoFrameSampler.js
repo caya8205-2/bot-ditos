@@ -63,18 +63,23 @@ async function getVideoDuration(filePath) {
  */
 async function extractFrameGrid(videoUrl, options = {}) {
     const frameCount = options.frameCount || DEFAULT_FRAME_COUNT;
+    const maxBytes = options.maxBytes
+        || Number(process.env.VISION_VIDEO_DOWNLOAD_MAX_BYTES)
+        || 100 * 1024 * 1024;
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ditos-vid-'));
 
     try {
         const videoPath = path.join(tmpDir, 'input.mp4');
 
         // Unduh video dulu karena ffmpeg butuh file lokal.
+        // Batas ukuran mengikuti VISION_VIDEO_DOWNLOAD_MAX_BYTES supaya clip
+        // Discord ~50MB tidak ditolak seperti batas 40MB sebelumnya.
         const axios = require('axios');
         const res = await axios.get(videoUrl, {
             responseType: 'arraybuffer',
-            timeout: 60000,
-            maxContentLength: 40 * 1024 * 1024,
-            maxBodyLength: 40 * 1024 * 1024,
+            timeout: 120000,
+            maxContentLength: maxBytes,
+            maxBodyLength: maxBytes,
             headers: { 'User-Agent': 'BotDitos/2.2 (+discord)' },
         });
         await fsp.writeFile(videoPath, Buffer.from(res.data));

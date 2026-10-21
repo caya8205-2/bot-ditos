@@ -57,6 +57,29 @@ const VISION_VIDEO_MAX_DURATION_S =
     Number(readEnv('VISION_VIDEO_MAX_DURATION_S')) || 90;
 const VISION_VIDEO_MAX_HEIGHT =
     Number(readEnv('VISION_VIDEO_MAX_HEIGHT')) || 480;
+// Ambang minimum prompt_tokens untuk memastikan media benar-benar dicerna.
+// Model yang mengabaikan lampiran hanya menghasilkan puluhan token teks.
+const MIN_MEDIA_PROMPT_TOKENS =
+    Number(readEnv('VISION_VIDEO_MIN_PROMPT_TOKENS')) || 100;
+
+// Model yang sudah terbukti tidak menerima input video. Setelah satu kegagalan
+// nyata, jalur video dilewati untuk model itu supaya tidak membuang waktu dan
+// token, dan langsung memakai grid frame sebagai gambar.
+const videoUnsupportedModels = new Set();
+
+function markModelVideoUnsupported(model) {
+    if (model && !videoUnsupportedModels.has(model)) {
+        videoUnsupportedModels.add(model);
+        console.warn(
+            `[VisionVideo] "${model}" ditandai tidak mendukung video; ` +
+            'selanjutnya memakai jalur grid frame.'
+        );
+    }
+}
+
+function isModelMarkedVideoUnsupported(model) {
+    return videoUnsupportedModels.has(model);
+}
 
 let visionClient = null;
 
@@ -277,6 +300,56 @@ function probeDuration(filePath) {
 }
 
 /**
+ * Minta model vision mendeskripsikan sebuah GAMBAR (data URL).
+ *
+ * Dipakai untuk dua hal: mendeskripsikan frame grid video ketika model utama
+ * tidak bisa vision, dan sebagai jalur alternatif ketika provider video tidak
+ * benar-benar menerima input video. Model vision yang hanya bisa gambar tetap
+ * berguna lewat jalur ini.
+ *
+ * @returns {Promise<string|null>}
+ */
+async function analyzeImageWithVisionModel(imageDataUrl, prompt = null, options = {}) {
+    if (!isVideoProviderAvailable()) return null;
+
+    try {
+        const model = options.model || VISION_VIDEO_MODEL;
+        const client = getVisionClient();
+        const completion = await client.chat.completions.create({
+            model,
+            messages: [
+                {
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'text',
+                            text: prompt ||
+                                'Gambar ini berisi beberapa frame yang diambil dari sebuah video, ' +
+                                'tersusun sebagai grid. Jelaskan isi videonya secara detail tapi ringkas ' +
+                                'dalam bahasa Indonesia: apa yang terjadi, objek/orang yang muncul, ' +
+                                'suasana, dan teks yang terlihat di layar.',
+                        },
+                        { type: 'image_url', image_url: { url: imageDataUrl } },
+                    ],
+                },
+            ],
+            max_tokens: 2000,
+        });
+
+        const text = completion.choices?.[0]?.message?.content?.trim();
+        if (!text) {
+            console.warn('[VisionVideo] Deskripsi gambar kosong.');
+            return null;
+        }
+        return text;
+    } catch (error) {
+        const reason = error?.error?.message || error?.message || 'unknown error';
+        console.warn(`[VisionVideo] Gagal deskripsikan gambar: ${reason}`);
+        return null;
+    }
+}
+
+/**
  * Minta model video mendeskripsikan isi video.
  * Mengembalikan string deskripsi, atau null kalau gagal (caller akan fallback
  * ke frame sampling supaya video tetap terbaca dalam bentuk gambar).
@@ -289,6 +362,12 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
 
     try {
         const model = options.model || VISION_VIDEO_MODEL;
+
+        // Kalau model ini sudah terbukti gagal menerima video, jangan ulangi.
+        if (isModelMarkedVideoUnsupported(model)) {
+            return null;
+        }
+
         // Kapabilitas dicek dari katalog provider; kalau model tidak ada di
         // katalog, tetap dicoba (jangan blokir) tapi beri peringatan.
         const fromCatalog = await lookupModelCapabilities(model);
@@ -315,16 +394,47 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
                     role: 'user',
                     content: [
                         { type: 'text', text: prompt || defaultPrompt },
-                        { type: 'video_url', video_url: { url: video.dataUrl } },
+                        // ZenMux menerima video lewat tipe `file` pada Chat
+                        // Completion. Field `file_data` boleh berisi data URL.
+                        {
+                            type: 'file',
+                            file: {
+                                filename: options.filename || 'video.mp4',
+                                file_data: video.dataUrl,
+                            },
+                        },
                     ],
                 },
             ],
-            max_tokens: 900,
+            // Model reasoning seperti GLM bisa menghabiskan seluruh budget di
+            // proses berpikir dan mengembalikan content kosong, jadi beri ruang.
+            max_tokens: 2000,
         });
 
-        const text = completion.choices?.[0]?.message?.content?.trim();
+        const choice = completion.choices?.[0];
+        const text = choice?.message?.content?.trim();
+        const promptTokens = completion.usage?.prompt_tokens || 0;
+
+        // Model yang tidak benar-benar menerima video akan mengabaikan
+        // lampiran dan hanya memproses teks, sehingga prompt_tokens tetap
+        // kecil (puluhan). Video yang benar-benar dicerna menaikkan token
+        // jauh lebih banyak. Ini mencegah deskripsi halusinasi dipakai.
         if (!text) {
-            console.warn('[VisionVideo] Model mengembalikan respons kosong.');
+            console.warn(
+                `[VisionVideo] Respons kosong (finish=${choice?.finish_reason}, ` +
+                `prompt_tokens=${promptTokens}).`
+            );
+            markModelVideoUnsupported(model);
+            return null;
+        }
+
+        if (promptTokens < MIN_MEDIA_PROMPT_TOKENS) {
+            console.warn(
+                `[VisionVideo] Video tidak ikut diproses: prompt_tokens hanya ${promptTokens} ` +
+                `(minimum ${MIN_MEDIA_PROMPT_TOKENS}). Model "${model}" kemungkinan tidak ` +
+                'benar-benar menerima input video meski katalog menyatakannya.'
+            );
+            markModelVideoUnsupported(model);
             return null;
         }
 
@@ -336,6 +446,16 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
     } catch (error) {
         const reason = error?.error?.message || error?.message || 'unknown error';
         console.error(`[VisionVideo] Gagal: ${reason}`);
+
+        // Kegagalan yang menunjukkan model tidak menerima format video
+        // (bukan sekadar rate limit atau gangguan jaringan) membuat model
+        // ditandai, supaya percobaan berikutnya langsung ke jalur gambar.
+        const model = options.model || VISION_VIDEO_MODEL;
+        const isFormatRejection = /invalid input|参数有误|格式|unsupported|not support/i.test(reason);
+        const isRateLimit = /usage limit|rate limit|quota|balance/i.test(reason);
+        if (isFormatRejection && !isRateLimit) {
+            markModelVideoUnsupported(model);
+        }
         return null;
     }
 }
@@ -349,6 +469,7 @@ module.exports = {
     VISION_VIDEO_TARGET_BYTES,
     VISION_VIDEO_MAX_DURATION_S,
     VISION_VIDEO_MAX_HEIGHT,
+    MIN_MEDIA_PROMPT_TOKENS,
     isVideoProviderAvailable,
     getVisionClient,
     fetchVideoAsDataUrl,
@@ -356,4 +477,8 @@ module.exports = {
     probeMedia,
     probeDuration,
     analyzeVideoWithVisionModel,
+    analyzeImageWithVisionModel,
+    markModelVideoUnsupported,
+    isModelMarkedVideoUnsupported,
+    videoUnsupportedModels,
 };

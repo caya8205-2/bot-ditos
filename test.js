@@ -1,5 +1,10 @@
 'use strict';
 
+// test.js dijalankan langsung dengan `node test.js`, bukan lewat bot, jadi
+// .env tidak ikut dimuat. Tanpa ini semua pengecekan yang bergantung pada env
+// (Groq, router, ZenMux) akan salah menyimpulkan key belum dikonfigurasi.
+require('dotenv').config({ quiet: true });
+
 const assert = require('assert');
 const r = require('./src/utils/youtubeResolver');
 const s = require('./src/utils/spotifyResolver');
@@ -95,9 +100,24 @@ async function testAll() {
         });
         const groqSpy = async () => { calls.push('GROQ'); return okResult('groq-answer'); };
 
+        // Model fallback router bisa berada di provider berbeda (base URL
+        // sendiri), jadi caller-nya pun terpisah. Keduanya harus di-inject
+        // supaya test tidak menembak jaringan sungguhan.
+        const fallbackProviderSpy = async (fn) => fn({
+            chat: { completions: { create: async (opts) => {
+                calls.push(opts.model);
+                if (opts.model === llm.NINER_MODEL) throw fail500();
+                return okResult('fallback-router-answer');
+            } } },
+        });
+
         const result = await llm.callLLMWithFallback(
             async (client) => client.chat.completions.create({ model: 'x', messages: [] }),
-            { ninerCaller: routerPartial, groqCaller: groqSpy }
+            {
+                ninerCaller: routerPartial,
+                ninerFallbackCaller: fallbackProviderSpy,
+                groqCaller: groqSpy,
+            }
         );
         assert.strictEqual(result.choices[0].message.content, 'fallback-router-answer', 'Router fallback model must serve the request');
         assert(!calls.includes('GROQ'), 'Groq must not be called when a router fallback model succeeds');
@@ -189,6 +209,40 @@ async function testAll() {
         assert(vv.VISION_VIDEO_MAX_HEIGHT >= 360,
             'Resolusi hasil minimal 360p supaya teks masih terbaca');
         console.log(' -> PASS: konfigurasi video masuk akal');
+    }
+
+    console.log('\n[TEST] Checking video format and fallback behaviour...');
+    {
+        const vv = require('./src/utils/videoVisionManager');
+        const mc = require('./src/utils/messageContext');
+
+        // ZenMux memakai tipe `file` untuk video, bukan `video_url`.
+        const direct = mc.renderVideoParts([{
+            mode: 'direct', dataUrl: 'data:video/mp4;base64,AAA', label: 'Video', filename: 'a.mp4',
+        }]);
+        assert(direct.some((p) => p.type === 'file'), 'Video direct harus jadi part file');
+        assert(!direct.some((p) => p.type === 'video_url'), 'video_url bukan tipe yang dikenal');
+
+        // Model yang tidak menerima video harus ditandai supaya tidak diulang.
+        assert.strictEqual(vv.isModelMarkedVideoUnsupported('uji-model'), false);
+        vv.markModelVideoUnsupported('uji-model');
+        assert.strictEqual(vv.isModelMarkedVideoUnsupported('uji-model'), true);
+        console.log(' -> PASS: format video dan penanda model benar');
+    }
+
+    console.log('\n[TEST] Checking vision manager generik...');
+    {
+        const vm = require('./src/utils/visionManager');
+        // Modul tidak boleh lagi terikat Gemini.
+        assert(typeof vm.describeImage === 'function', 'describeImage harus ada');
+        assert(typeof vm.extractTextFromImage === 'function', 'extractTextFromImage harus ada');
+        assert(typeof vm.getVisionCandidates === 'function', 'getVisionCandidates harus ada');
+
+        // geminiManager hanya wrapper kompatibilitas, bukan SDK Gemini.
+        const gm = require('./src/utils/geminiManager');
+        assert(typeof gm.analyzeImageWithGemini === 'function', 'Wrapper lama harus tetap ada');
+        assert.strictEqual(gm.describeImage, vm.describeImage, 'Wrapper harus meneruskan ke visionManager');
+        console.log(' -> PASS: vision manager generik dan wrapper kompatibilitas benar');
     }
 
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');

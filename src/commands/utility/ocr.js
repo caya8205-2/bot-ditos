@@ -95,9 +95,9 @@ module.exports = {
                 }
             }
 
-            // 2. Fallback atau jika model chat tidak support vision -> lempar ke Gemini Vision adapter
+            // 2. Fallback atau jika model chat tidak support vision -> lempar ke vision manager
             if (!extractedText) {
-                console.log('[OCR] Melempar OCR ke Gemini Vision adapter...');
+                console.log('[OCR] Melempar OCR ke vision manager...');
                 extractedText = await analyzeImageWithGemini(attachment.url, ocrInstruction);
             }
 

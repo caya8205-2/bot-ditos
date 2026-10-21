@@ -14,7 +14,7 @@
  */
 
 const { getActiveChatModelInfo } = require('./llmManager');
-const { fetchAndProcessImage, analyzeImageWithGemini } = require('./geminiManager');
+const { fetchAndProcessImage, describeImage } = require('./visionManager');
 const { isVideoSupported } = require('./visionHelper');
 
 // Batas gambar yang dikirim ke model per satu trigger auto-chat.
@@ -94,12 +94,12 @@ async function processImageAttachment(attachment) {
             return result;
         } catch (err) {
             console.warn(
-                `[VisionContext] Direct vision gagal (${err.message}), fallback ke Gemini adapter.`
+                `[VisionContext] Direct vision gagal (${err.message}), fallback ke vision manager.`
             );
         }
     }
 
-    const description = await analyzeImageWithGemini(key);
+    const description = await describeImage(key);
     const result = { dataUrl: null, description: description || null };
     if (description) {
         cacheSet(descriptionCache, key, description, DESCRIPTION_CACHE_LIMIT);
@@ -210,6 +210,7 @@ async function processVideoAttachment(attachment, modelName) {
                 mode: 'direct',
                 dataUrl: video.dataUrl,
                 mimeType: video.mimeType,
+                filename: attachment.name || 'video.mp4',
                 description: null,
             };
             cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
@@ -220,13 +221,37 @@ async function processVideoAttachment(attachment, modelName) {
         }
     }
 
-    // Jalur 2: vision manager dengan model video terpisah.
+    // Jalur 2: vision manager mendeskripsikan video.
+    // Dua cara dicoba berurutan: kirim video utuh, lalu kalau provider ternyata
+    // hanya menerima gambar, kirim grid frame sebagai gambar. Banyak model
+    // "video-capable" di katalog kenyataannya hanya memproses image part,
+    // sehingga jalur gambar ini yang paling andal.
     try {
         const videoVision = require('./videoVisionManager');
         if (videoVision.isVideoProviderAvailable()) {
-            const description = await videoVision.analyzeVideoWithVisionModel(url);
+            let description = await videoVision.analyzeVideoWithVisionModel(url);
+
+            if (!description) {
+                const { extractFrameGrid } = require('./videoFrameSampler');
+                const grid = await extractFrameGrid(url);
+                if (grid) {
+                    description = await videoVision.analyzeImageWithVisionModel(grid.dataUrl);
+                    if (description) {
+                        const result = {
+                            mode: 'description',
+                            dataUrl: null,
+                            description,
+                            source: 'frame-grid',
+                        };
+                        cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
+                        console.log('[VisionContext] Video dideskripsikan lewat grid frame');
+                        return result;
+                    }
+                }
+            }
+
             if (description) {
-                const result = { mode: 'description', dataUrl: null, description };
+                const result = { mode: 'description', dataUrl: null, description, source: 'video' };
                 cacheSet(videoCache, url, result, VIDEO_CACHE_LIMIT);
                 return result;
             }
@@ -235,7 +260,8 @@ async function processVideoAttachment(attachment, modelName) {
         console.warn(`[VisionContext] Vision manager video gagal: ${err.message}`);
     }
 
-    // Jalur 3: fallback frame sampling.
+    // Jalur 3: fallback frame sampling tanpa deskripsi.
+    // Grid dikirim sebagai image part; berguna kalau model utama vision-capable.
     try {
         const { extractFrameGrid } = require('./videoFrameSampler');
         const grid = await extractFrameGrid(url);
@@ -283,7 +309,9 @@ async function buildVideoContext(candidates = [], modelName) {
 
 /**
  * Render entri video jadi content parts.
- * - direct: video_url part (model video-capable)
+ * - direct: video dikirim sebagai tipe `file` (format Chat Completion ZenMux
+ *   dan OpenAI-compatible yang mendukung video). `video_url` bukan tipe yang
+ *   dikenal, jadi jangan dipakai.
  * - frames: image_url part berisi grid frame
  * - description: teks hasil vision manager
  */
@@ -292,7 +320,13 @@ function renderVideoParts(entries = []) {
     for (const entry of entries) {
         if (entry.mode === 'direct' && entry.dataUrl) {
             parts.push({ type: 'text', text: `${entry.label}:` });
-            parts.push({ type: 'video_url', video_url: { url: entry.dataUrl } });
+            parts.push({
+                type: 'file',
+                file: {
+                    filename: entry.filename || 'video.mp4',
+                    file_data: entry.dataUrl,
+                },
+            });
         } else if (entry.mode === 'frames' && entry.dataUrl) {
             parts.push({
                 type: 'text',

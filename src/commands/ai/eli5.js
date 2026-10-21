@@ -75,13 +75,13 @@ module.exports = {
                         imageProcessedData = await fetchAndProcessImage(attachedImage.url);
                         console.log(`[ELI5] Menggunakan vision bawaan model utama (${activeModel.model})`);
                     } catch (fetchErr) {
-                        console.warn('[ELI5] Fallback ke Gemini adapter:', fetchErr.message);
+                        console.warn('[ELI5] Fallback ke vision manager:', fetchErr.message);
                         imageDescription = await analyzeImageWithGemini(attachedImage.url);
                     }
                 } else {
-                    await message.channel.send('🔍 Bentar, lagi analisa gambarnya lewat Gemini...');
+                    await message.channel.send('🔍 Bentar, lagi analisa gambarnya lewat vision manager...');
                     imageDescription = await analyzeImageWithGemini(attachedImage.url);
-                    console.log('[ELI5] Image analyzed via Gemini adapter:', imageDescription?.substring(0, 100));
+                    console.log('[ELI5] Image analyzed via vision manager:', imageDescription?.substring(0, 100));
                 }
             }
 

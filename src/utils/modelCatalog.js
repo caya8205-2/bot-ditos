@@ -46,14 +46,18 @@ function normalizeBaseURL(url) {
 /**
  * Provider yang katalognya bisa dipakai untuk cek kapabilitas.
  * Mengembalikan daftar {baseURL, apiKey, label}.
+ *
+ * VISION_BASE_URL didahulukan karena vision manager generik memakainya
+ * sebagai sumber utama; var lama tetap dibaca supaya konfigurasi yang sudah
+ * ada tidak langsung rusak.
  */
 function getCatalogProviders() {
     const providers = [];
 
     const visionBase = normalizeBaseURL(readEnv(
-        'VISION_PROVIDER_BASE_URL', 'ZENMUX_BASE_URL', 'VISION_BASE_URL'
+        'VISION_BASE_URL', 'VISION_PROVIDER_BASE_URL', 'ZENMUX_BASE_URL'
     ));
-    const visionKey = readEnv('VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY', 'VISION_API_KEY');
+    const visionKey = readEnv('VISION_API_KEY', 'VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY');
     if (visionBase) providers.push({ baseURL: visionBase, apiKey: visionKey, label: 'vision-provider' });
 
     const mainBase = normalizeBaseURL(readEnv('NINER_BASE_URL', '9ROUTER_BASE_URL'));
@@ -90,10 +94,21 @@ async function loadCatalog(provider) {
         for (const item of list) {
             const id = item?.id;
             if (!id) continue;
+
+            // Dua format katalog yang beredar:
+            // 1. ZenMux  -> input_modalities: ["text","image","video","file"]
+            // 2. 9router -> capabilities: { vision: true, videoInput: true }
+            // Keduanya harus dibaca, kalau tidak router akan dianggap tidak
+            // punya model vision/video sama sekali.
             const inputs = item.input_modalities || item.architecture?.input_modalities || [];
+            const caps = item.capabilities || {};
+
+            const vision = inputs.includes('image') || caps.vision === true;
+            const video = inputs.includes('video') || caps.videoInput === true;
+
             byId.set(id, {
-                vision: inputs.includes('image'),
-                video: inputs.includes('video'),
+                vision,
+                video,
                 displayName: item.display_name || item.name || null,
             });
         }
