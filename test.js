@@ -480,6 +480,81 @@ async function testAll() {
         console.log(' -> PASS: video diblokir di provider, gambar tetap jalan');
     }
 
+    console.log('\n[TEST] Checking thinking control keeps reasoning out of replies...');
+    {
+        const tc = require('./src/utils/thinkingControl');
+        const cat = require('./src/utils/modelCatalog');
+        const llm = require('./src/utils/llmManager');
+
+        // Config terbaca.
+        const cfg = tc.getThinkingConfig();
+        assert.strictEqual(typeof cfg.disable, 'boolean');
+        assert.strictEqual(typeof cfg.never_use_as_reply, 'boolean');
+
+        // Param dipilih dari format katalog, bukan ditebak.
+        assert.deepStrictEqual(
+            tc.DISABLE_PARAMS.deepseek(),
+            { thinking: { type: 'disabled' } },
+            'format deepseek memakai thinking.disabled'
+        );
+        assert.deepStrictEqual(
+            tc.DISABLE_PARAMS.qwen(),
+            { enable_thinking: false },
+            'format qwen memakai enable_thinking'
+        );
+        assert.strictEqual(tc.DISABLE_PARAMS.minimax, null,
+            'format minimax tidak punya cara mematikan');
+
+        // Blok berpikir dibuang dari jawaban.
+        assert.strictEqual(tc.stripReasoning('<thinking>pikir</thinking>Halo'), 'Halo');
+        assert.strictEqual(tc.stripReasoning('Jawaban bersih'), 'Jawaban bersih');
+        assert.strictEqual(tc.stripReasoning('<analysis>terbuka'), '');
+
+        // Param benar-benar masuk ke request yang dikirim.
+        let captured = null;
+        const fakeClient = {
+            chat: { completions: { create: async (opts) => { captured = opts; return { choices: [{ message: { content: 'ok' } }] }; } } },
+        };
+        await llm.createModelBoundClient(fakeClient, 'oc/deepseek-v4.1-flash-free')
+            .chat.completions.create({ messages: [] });
+
+        const info = cat.lookupThinkingInfoSync('oc/deepseek-v4.1-flash-free');
+        if (info?.reasoning && info.canDisable) {
+            assert.ok(captured.thinking || captured.reasoning_effort || captured.enable_thinking,
+                'parameter thinking harus terkirim untuk model yang bisa dimatikan');
+        }
+
+        // Penolakan param di-retry tanpa param, bukan menggagalkan chat.
+        let calls = 0;
+        const rejectingClient = {
+            chat: {
+                completions: {
+                    create: async (opts) => {
+                        calls += 1;
+                        if (opts.thinking || opts.reasoning_effort) {
+                            const err = new Error('[400] invalid params: thinking not supported');
+                            err.status = 400;
+                            throw err;
+                        }
+                        return { choices: [{ message: { content: 'setelah retry' } }] };
+                    },
+                },
+            },
+        };
+        const out = await llm.createModelBoundClient(rejectingClient, 'oc/deepseek-v4.1-flash-free')
+            .chat.completions.create({ messages: [] });
+        assert.strictEqual(out.choices[0].message.content, 'setelah retry');
+        assert.ok(calls >= 1);
+
+        // Tidak boleh ada jalur yang memakai reasoning sebagai jawaban.
+        const fs = require('fs');
+        const src = fs.readFileSync('src/utils/llmManager.js', 'utf8');
+        assert.ok(!/message\.content\s*=\s*reasoning/.test(src),
+            'reasoning tidak boleh dipakai sebagai jawaban');
+
+        console.log(' -> PASS: reasoning tidak bocor ke chat');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 

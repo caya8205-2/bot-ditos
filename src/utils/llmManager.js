@@ -187,15 +187,74 @@ async function callRouterChain(requestFn, options = {}) {
 }
 
 function createModelBoundClient(client, model, transformOptions = (options) => options) {
+    // Parameter untuk mematikan thinking dipasang di sini supaya berlaku untuk
+    // semua pemanggil tanpa perlu diulang di setiap call site.
+    const thinkingParams = require('./thinkingControl').buildThinkingParams(model);
+
+    const create = async (options = {}) => {
+        const merged = transformOptions({ ...thinkingParams, ...options, model });
+
+        if (!Object.keys(thinkingParams).length) {
+            return client.chat.completions.create(merged);
+        }
+
+        try {
+            return await client.chat.completions.create(merged);
+        } catch (error) {
+            // Metadata katalog bisa keliru: ada model yang dilaporkan bisa
+            // dimatikan thinking-nya tapi justru menolak parameternya. Chat
+            // tidak boleh gagal hanya karena itu, jadi dicoba sekali lagi tanpa
+            // parameter thinking.
+            if (!isThinkingParamRejection(error)) throw error;
+
+            console.warn(
+                `[Thinking] ${model} menolak parameter thinking ` +
+                `(${JSON.stringify(thinkingParams)}), diulang tanpa parameter itu.`
+            );
+
+            const { thinking, reasoning_effort, enable_thinking, ...rest } = merged;
+            return client.chat.completions.create(rest);
+        }
+    };
+
     return {
         chat: {
-            completions: {
-                create: (options = {}) => client.chat.completions.create(
-                    transformOptions({ ...options, model })
-                ),
-            },
+            completions: { create },
         },
     };
+}
+
+/**
+ * Apakah error ini berasal dari parameter thinking yang tidak diterima model.
+ *
+ * Provider menyebut nama parameternya di pesan error, jadi dicocokkan ke nama
+ * parameter yang kita kirim. Status 400/422 dipakai sebagai pembatas supaya
+ * error lain tidak ikut diulang.
+ */
+function isThinkingParamRejection(error) {
+    const status = error?.status || error?.statusCode || error?.response?.status;
+    if (status && status !== 400 && status !== 422) return false;
+
+    const detail = [
+        error?.message,
+        error?.response?.data?.error?.message,
+        error?.response?.data?.message,
+        JSON.stringify(error?.response?.data?.error || ''),
+    ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+    if (!detail) return false;
+
+    const mentionsParam = ['thinking', 'reasoning_effort', 'enable_thinking', 'reasoning']
+        .some((name) => detail.includes(name));
+    const looksLikeRejection = [
+        'invalid', 'unsupported', 'not support', 'unknown', 'unrecognized',
+        'not allowed', 'unexpected', 'extra', 'failed',
+    ].some((word) => detail.includes(word));
+
+    return mentionsParam && looksLikeRejection;
 }
 
 function isGroqFallbackAvailable() {
@@ -232,13 +291,16 @@ function isConnectivityError(error) {
 function extractChoiceContent(result) {
     const message = result?.choices?.[0]?.message;
     if (!message) return '';
-    const content = message.content?.trim();
+
+    const { stripReasoning } = require('./thinkingControl');
+
+    // Hanya `content` yang boleh jadi jawaban. `reasoning_content` adalah proses
+    // berpikir model, dan mengirimkannya ke chat berarti user membaca pikiran
+    // mentah model, bukan jawabannya. Dulu isi reasoning dipakai sebagai
+    // jawaban ketika content kosong, dan itulah yang membuat reasoning bocor.
+    const content = stripReasoning(message.content?.trim());
     if (content) return content;
-    const reasoning = message.reasoning_content?.trim() || message.reasoning?.trim();
-    if (reasoning) {
-        message.content = reasoning;
-        return reasoning;
-    }
+
     return '';
 }
 

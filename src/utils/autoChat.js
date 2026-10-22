@@ -25,6 +25,7 @@ function filterChannelHistory(messages) {
 }
 
 const botConfig = require('./botConfig');
+const { stripReasoning } = require('./thinkingControl');
 
 /**
  * Konfigurasi auto-chat dari config.yaml bagian `auto_chat:`.
@@ -439,7 +440,7 @@ async function generateAutoReply(message, textContent) {
             });
         });
 
-        const rawReply = completion.choices?.[0]?.message?.content?.trim();
+        const rawReply = stripReasoning(completion.choices?.[0]?.message?.content);
         if (!rawReply) return null;
 
         const { reaction, cleanText } = extractReactionAndCleanReply(rawReply, message.guild);
@@ -527,7 +528,7 @@ async function sendIdleMessage(channel) {
             });
         });
 
-        const idleMessage = completion.choices?.[0]?.message?.content?.trim();
+        const idleMessage = stripReasoning(completion.choices?.[0]?.message?.content);
 
         if (!idleMessage || idleMessage.length < 3) {
             const fallbacks = [

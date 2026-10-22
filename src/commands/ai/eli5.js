@@ -3,6 +3,7 @@ const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo } = require('../.
 const { fetchAndProcessImage, analyzeImageWithGemini } = require('../../utils/geminiManager');
 const { replyEmbedAndSave, saveToChannelHistory } = require('../../utils/helpers');
 const { OWNER_ID } = require('../../config');
+const { stripReasoning } = require('../../utils/thinkingControl');
 
 module.exports = {
     name: 'eli5',
@@ -193,7 +194,7 @@ module.exports = {
                 });
             });
 
-            const explanation = completion.choices?.[0]?.message?.content?.trim();
+            const explanation = stripReasoning(completion.choices?.[0]?.message?.content);
 
             if (!explanation) {
                 return message.reply('Aduh, gue lagi bengong nih. Coba tanya lagi ya!');

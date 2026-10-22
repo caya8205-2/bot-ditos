@@ -181,6 +181,15 @@ async function loadCatalog(provider) {
                 video,
                 providerBaseURL: provider.baseURL,
                 displayName: item.display_name || item.name || null,
+                // Metadata thinking (9router). ZenMux tidak menyediakannya,
+                // jadi nilainya undefined dan dianggap tidak diketahui.
+                thinking: {
+                    reasoning: caps.reasoning === true,
+                    format: caps.thinkingFormat || null,
+                    canDisable: caps.thinkingCanDisable === true,
+                    effortSupported: caps.thinkingEffortSupported === true,
+                    known: caps.reasoning !== undefined,
+                },
             });
         }
 
@@ -281,6 +290,30 @@ function isActiveChatProviderBlocked() {
 }
 
 /**
+ * Metadata thinking sebuah model dari cache katalog.
+ *
+ * Mengembalikan null kalau provider tidak menyediakan metadata thinking
+ * (mis. ZenMux), supaya pemanggil bisa membedakan "tidak mendukung" dari
+ * "tidak diketahui".
+ */
+function lookupThinkingInfoSync(modelName) {
+    const hit = findCached(modelName);
+    if (!hit?.thinking?.known) return null;
+    return hit.thinking;
+}
+
+async function lookupThinkingInfo(modelName) {
+    if (!modelName || typeof modelName !== 'string') return null;
+    for (const provider of getCatalogProviders()) {
+        const catalog = await loadCatalog(provider);
+        if (!catalog) continue;
+        const entry = catalog.get(modelName);
+        if (entry?.thinking?.known) return entry.thinking;
+    }
+    return null;
+}
+
+/**
  * Versi sinkron: pakai cache katalog kalau sudah ada, selain itu pola nama.
  * Dipakai di jalur yang tidak bisa await (mis. getActiveChatModelInfo).
  */
@@ -339,6 +372,8 @@ module.exports = {
     lookupModelCapabilities,
     isVideoPassthroughBlocked,
     getNoPassthroughBaseURLs,
+    lookupThinkingInfoSync,
+    lookupThinkingInfo,
     warmCatalog,
     isVisionSupportedSync,
     isVideoSupportedSync,

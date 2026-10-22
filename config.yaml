@@ -30,6 +30,16 @@ local_llm:
   input_token_budget: 6000
   cooldown_ms: 300000
 
+# ── Kontrol reasoning / thinking ────────────────────────────────────────────
+thinking:
+  # Matikan proses berpikir model kalau provider mengizinkannya. Yang dikirim ke
+  # chat jadi hanya output, bukan catatan berpikir. Parameter yang dipakai
+  # dipilih dari capabilities.thinkingFormat di katalog, bukan ditebak.
+  disable: true
+  # Jangan pernah memakai isi reasoning sebagai jawaban saat content kosong.
+  # Dulu ini yang membuat pikiran mentah model muncul di chat.
+  never_use_as_reply: true
+
 # ── Cooldown provider ───────────────────────────────────────────────────────
 cooldown:
   # Berapa lama model yang gagal dilewati sebelum dicoba lagi.

@@ -16,6 +16,7 @@ const {
     resolveReferencedMessage,
 } = require('../../utils/messageContext');
 const { OWNER_ID } = require('../../config');
+const { stripReasoning } = require('../../utils/thinkingControl');
 
 /**
  * Ulangi permintaan dengan grid frame video, dipakai ketika model menolak
@@ -70,7 +71,7 @@ async function retryWithFrameGrid(message, videoCandidates, baseText) {
             });
         });
 
-        const text = completion.choices?.[0]?.message?.content?.trim();
+        const text = stripReasoning(completion.choices?.[0]?.message?.content);
         if (!text || looksLikeVideoRefusal(text)) {
             console.warn('[Chat] Retry frame grid juga gagal.');
             return null;
@@ -419,7 +420,7 @@ module.exports = {
                 });
             });
 
-            const rawReply = completion.choices?.[0]?.message?.content?.trim();
+            const rawReply = stripReasoning(completion.choices?.[0]?.message?.content);
 
             // Model bisa mengaku tidak menerima video meski katalog menyatakan
             // video-capable. Kalau itu terjadi dan ada video mode direct,
