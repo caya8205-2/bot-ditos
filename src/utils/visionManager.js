@@ -48,8 +48,9 @@ const VISION_DEFAULTS = {
  */
 function getVisionConfig() {
     const { section, provider } = botConfig.getProviderForSection('vision', VISION_DEFAULTS);
+    // Model bisa diubah saat runtime lewat d!model (target "vision").
+    const target = botConfig.getTargetValue('vision');
 
-    // Cadangan: kalau config.yaml belum punya bagian vision, pakai env lama.
     const baseURL = provider
         ? normalizeBaseURL(provider.base_url)
         : normalizeBaseURL(readEnv('VISION_BASE_URL', 'ZENMUX_BASE_URL'));
@@ -60,7 +61,7 @@ function getVisionConfig() {
     return {
         baseURL,
         apiKey,
-        model: section.model || readEnv('VISION_MODEL'),
+        model: target.model || readEnv('VISION_MODEL'),
         timeoutMs: botConfig.asNumber(section.timeout_ms, 60000),
         maxDimension: botConfig.asNumber(section.max_dimension, 1024),
         minPromptTokens: botConfig.asNumber(section.min_prompt_tokens, 100),

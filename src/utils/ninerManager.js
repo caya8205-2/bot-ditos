@@ -59,9 +59,9 @@ function getNinerProvider() {
 function getNinerFallbackModel() {
     try {
         const botConfig = require('./botConfig');
-        const cfg = botConfig.getConfig();
-        const fromConfig = cfg.fallback_model?.model;
-        if (fromConfig) return fromConfig;
+        // Target "fallback" bisa diubah saat runtime lewat d!model.
+        const target = botConfig.getTargetValue('fallback');
+        if (target.model) return target.model;
     } catch {
         // abaikan
     }

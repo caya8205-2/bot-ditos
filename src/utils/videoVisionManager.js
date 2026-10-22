@@ -65,11 +65,14 @@ function getVideoConfig() {
         ? provider.apiKey
         : readEnv('VISION_PROVIDER_API_KEY', 'ZENMUX_API_KEY', 'VISION_API_KEY');
 
+    // Model bisa diubah saat runtime lewat d!model (target "vision_video").
+    const target = botConfig.getTargetValue('vision_video');
+
     return {
         baseURL,
         apiKey,
         providerName: provider?.name || null,
-        model: section.model || readEnv('VISION_VIDEO_MODEL', 'ZENMUX_VIDEO_MODEL'),
+        model: target.model || readEnv('VISION_VIDEO_MODEL', 'ZENMUX_VIDEO_MODEL'),
         timeoutMs: botConfig.asNumber(section.timeout_ms, 240000),
         downloadMaxBytes: botConfig.asNumber(section.download_max_bytes, 104857600),
         targetBytes: botConfig.asNumber(section.target_bytes, 9437184),

@@ -48,6 +48,7 @@ const COMMAND_LIST = {
     'removebg/mbg': 'Hapus background gambar yang dilampirkan',
     'gen': 'Generate image',
     'llmconfig': 'Lihat konfigurasi model lokal',
+    'model/models': 'Ganti model chat, vision, video, atau fallback tanpa restart',
 };
 
 const TOPICS = [

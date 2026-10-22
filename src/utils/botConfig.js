@@ -250,26 +250,126 @@ function resolveProviderKey(provider) {
 }
 
 /**
- * Model aktif saat ini. Urutan prioritas:
- * 1. Override runtime (dipilih lewat selector, belum tentu ditulis ke disk)
- * 2. config.yaml -> model.default
- * 3. env NINER_MODEL (kompatibilitas)
+ * Target model yang bisa diubah. Setiap target menunjuk satu bagian di
+ * config.yaml, dengan nama key model dan provider masing-masing.
  */
-let runtimeModelOverride = null;
+const MODEL_TARGETS = [
+    {
+        key: 'chat',
+        label: 'Chat',
+        description: 'Model utama untuk chat & auto-chat',
+        section: 'model',
+        modelKey: 'default',
+    },
+    {
+        key: 'vision',
+        label: 'Vision (gambar)',
+        description: 'Dipakai untuk deskripsi gambar dan OCR',
+        section: 'vision',
+        modelKey: 'model',
+    },
+    {
+        key: 'vision_video',
+        label: 'Vision (video)',
+        description: 'Dipakai kalau model chat tidak bisa video',
+        section: 'vision_video',
+        modelKey: 'model',
+    },
+    {
+        key: 'fallback',
+        label: 'Fallback',
+        description: 'Model cadangan sebelum jatuh ke Groq',
+        section: 'fallback_model',
+        modelKey: 'model',
+    },
+];
 
-function getActiveModel() {
-    if (runtimeModelOverride) return runtimeModelOverride;
+const PROVIDER_KEY = 'provider';
+
+function getModelTargets() {
+    return MODEL_TARGETS.map((t) => ({ ...t }));
+}
+
+function getModelTarget(targetKey) {
+    return MODEL_TARGETS.find((t) => t.key === targetKey) || null;
+}
+
+/**
+ * Override runtime per target: { model, provider }. Belum tentu ditulis ke
+ * disk, jadi hilang saat restart kecuali disimpan.
+ */
+const runtimeOverrides = new Map();
+
+function getTargetOverride(targetKey) {
+    return runtimeOverrides.get(targetKey) || null;
+}
+
+/**
+ * Hapus override runtime sebuah target, supaya kembali memakai nilai
+ * config.yaml. Berguna saat pengujian atau saat ingin membatalkan perubahan.
+ */
+function clearTargetOverride(targetKey) {
+    return runtimeOverrides.delete(targetKey);
+}
+
+/**
+ * Nilai model dan provider efektif untuk sebuah target.
+ * Prioritas: override runtime -> config.yaml -> env (khusus chat).
+ */
+function getTargetValue(targetKey) {
+    const target = getModelTarget(targetKey);
+    if (!target) return { model: null, provider: null };
+
+    const override = runtimeOverrides.get(targetKey);
     const cfg = loadConfig();
-    return cfg.model?.default || process.env.NINER_MODEL || 'auto';
+    const section = cfg[target.section] || {};
+
+    let model = override?.model || section[target.modelKey] || null;
+    let provider = override?.provider || section[PROVIDER_KEY] || null;
+
+    // Kompatibilitas: target chat masih menghormati env lama.
+    if (targetKey === 'chat') {
+        if (!model) model = process.env.NINER_MODEL || 'auto';
+    }
+
+    return { model, provider };
+}
+
+/**
+ * Model aktif saat ini (target chat). Dipertahankan sebagai nama lama karena
+ * banyak modul memakainya.
+ */
+function getActiveModel() {
+    return getTargetValue('chat').model;
 }
 
 function getActiveProviderName() {
-    if (runtimeProviderOverride) return runtimeProviderOverride;
-    const cfg = loadConfig();
-    return cfg.model?.provider || null;
+    return getTargetValue('chat').provider;
 }
 
-let runtimeProviderOverride = null;
+/**
+ * Ganti model sebuah target tanpa restart.
+ * @param {string} targetKey chat | vision | vision_video | fallback
+ * @param {string} model
+ * @param {string|null} providerName
+ * @param {boolean} persist tulis ke config.yaml
+ */
+function setTargetModel(targetKey, model, providerName = null, persist = false) {
+    const target = getModelTarget(targetKey);
+    if (!target) throw new Error(`Target model tidak dikenal: ${targetKey}`);
+    if (!model) throw new Error('Nama model wajib diisi');
+
+    const current = getTargetValue(targetKey);
+    runtimeOverrides.set(targetKey, {
+        model,
+        provider: providerName || current.provider,
+    });
+
+    if (persist) {
+        return saveTargetToDisk(targetKey, model, providerName || current.provider);
+    }
+    return true;
+}
 
 function getActiveProvider() {
     const name = getActiveProviderName();
@@ -303,14 +403,7 @@ function getActiveProvider() {
  * @param {boolean} [persist] tulis ke config.yaml supaya bertahan setelah restart
  */
 function setActiveModel(model, providerName = null, persist = false) {
-    if (!model) throw new Error('Nama model wajib diisi');
-    runtimeModelOverride = model;
-    if (providerName) runtimeProviderOverride = providerName;
-
-    if (persist) {
-        return saveActiveModelToDisk(model, providerName || getActiveProviderName());
-    }
-    return true;
+    return setTargetModel('chat', model, providerName, persist);
 }
 
 /**
@@ -318,41 +411,68 @@ function setActiveModel(model, providerName = null, persist = false) {
  * Hanya bagian `model:` yang ditulis ulang.
  */
 function saveActiveModelToDisk(model, providerName) {
+    return saveTargetToDisk('chat', model, providerName);
+}
+
+/**
+ * Tulis model sebuah target ke config.yaml.
+ *
+ * Hanya baris model (dan provider, kalau target punya provider) di dalam blok
+ * bagian itu yang diganti. Komentar dan bagian lain dibiarkan utuh, jadi file
+ * tetap enak dibaca dan tidak teracak.
+ *
+ * @param {string} targetKey chat | vision | vision_video | fallback
+ * @param {string} model
+ * @param {string|null} providerName
+ */
+function saveTargetToDisk(targetKey, model, providerName) {
+    const target = getModelTarget(targetKey);
+    if (!target) {
+        console.error(`[Config] Target tidak dikenal: ${targetKey}`);
+        return false;
+    }
+
     try {
         const text = fs.readFileSync(CONFIG_PATH, 'utf8');
         const lines = text.split(/\r?\n/);
         const out = [];
-        let inModelBlock = false;
-        let wroteDefault = false;
+
+        const sectionHeader = new RegExp(`^${target.section}:\\s*$`);
+        const modelLine = new RegExp(`^(\\s+)${target.modelKey}:`);
+        const providerLine = /^(\s+)provider:/;
+
+        let inSection = false;
+        let wroteModel = false;
         let wroteProvider = false;
+        let sectionFound = false;
 
         for (const line of lines) {
             const isTopLevel = /^\S/.test(line);
-            const isModelKey = /^model:\s*$/.test(line);
 
-            if (isModelKey) {
-                inModelBlock = true;
+            if (sectionHeader.test(line)) {
+                inSection = true;
+                sectionFound = true;
                 out.push(line);
                 continue;
             }
 
-            if (inModelBlock) {
-                // Blok model berakhir saat ada key top-level lain.
-                if (isTopLevel && !isModelKey) {
-                    // Sisipkan nilai yang belum tertulis sebelum keluar blok.
-                    if (!wroteDefault) out.push(`  default: ${model}`);
+            if (inSection) {
+                // Bagian berakhir saat ada key top-level lain.
+                if (isTopLevel) {
+                    if (!wroteModel) out.push(`  ${target.modelKey}: ${model}`);
                     if (providerName && !wroteProvider) out.push(`  provider: ${providerName}`);
-                    inModelBlock = false;
+                    inSection = false;
                     out.push(line);
                     continue;
                 }
 
-                if (/^\s+default:/.test(line)) {
-                    out.push(`  default: ${model}`);
-                    wroteDefault = true;
+                if (modelLine.test(line)) {
+                    out.push(`  ${target.modelKey}: ${model}`);
+                    wroteModel = true;
                     continue;
                 }
-                if (/^\s+provider:/.test(line)) {
+
+                if (providerLine.test(line)) {
                     if (providerName) {
                         out.push(`  provider: ${providerName}`);
                         wroteProvider = true;
@@ -361,6 +481,7 @@ function saveActiveModelToDisk(model, providerName) {
                     }
                     continue;
                 }
+
                 out.push(line);
                 continue;
             }
@@ -368,14 +489,23 @@ function saveActiveModelToDisk(model, providerName) {
             out.push(line);
         }
 
-        // Kalau blok model tidak ada sama sekali, tambahkan di awal.
-        if (!wroteDefault && !lines.some((l) => /^model:\s*$/.test(l))) {
-            out.unshift('model:', `  default: ${model}`, ...(providerName ? [`  provider: ${providerName}`] : []));
+        // Bagian belum ada di file: tambahkan di akhir.
+        if (!sectionFound) {
+            out.push(
+                '',
+                `${target.section}:`,
+                `  ${target.modelKey}: ${model}`,
+                ...(providerName ? [`  provider: ${providerName}`] : [])
+            );
+        } else if (inSection) {
+            // Bagian ada di akhir file dan belum menulis nilainya.
+            if (!wroteModel) out.push(`  ${target.modelKey}: ${model}`);
+            if (providerName && !wroteProvider) out.push(`  provider: ${providerName}`);
         }
 
         fs.writeFileSync(CONFIG_PATH, out.join('\n'), 'utf8');
         loadConfig(true);
-        console.log(`[Config] Model aktif disimpan ke config.yaml: ${model}`);
+        console.log(`[Config] ${targetKey} disimpan ke config.yaml: ${model}`);
         return true;
     } catch (error) {
         console.error('[Config] Gagal menyimpan config.yaml:', error.message);
@@ -411,8 +541,15 @@ module.exports = {
     getActiveModel,
     getActiveProvider,
     getActiveProviderName,
+    getModelTargets,
+    getModelTarget,
+    getTargetValue,
+    getTargetOverride,
+    clearTargetOverride,
+    setTargetModel,
     setActiveModel,
     saveActiveModelToDisk,
+    saveTargetToDisk,
     getConfigPath,
     getConfigStatus,
     parseSimpleYaml,

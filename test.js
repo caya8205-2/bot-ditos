@@ -330,6 +330,48 @@ async function testAll() {
         console.log(' -> PASS: konfigurasi vision, video, dan semua provider valid');
     }
 
+    console.log('\n[TEST] Checking multi-target model selector...');
+    {
+        const bc = require('./src/utils/botConfig');
+        const cmd = require('./src/commands/admin/model');
+
+        const targets = bc.getModelTargets();
+        assert.strictEqual(targets.length, 4, 'Harus ada 4 target model');
+        ['chat', 'vision', 'vision_video', 'fallback'].forEach((k) =>
+            assert(bc.getModelTarget(k), `Target ${k} harus terdaftar`));
+
+        // Selector harus punya batas waktu supaya tidak menggantung.
+        assert.strictEqual(typeof cmd.SESSION_TTL_MS, 'number', 'TTL sesi harus angka');
+        assert(cmd.SESSION_TTL_MS > 0 && cmd.SESSION_TTL_MS <= 15 * 60 * 1000,
+            'TTL sesi harus wajar (<= 15 menit)');
+
+        // Ganti satu target tidak boleh mengubah target lain.
+        const before = {};
+        targets.forEach((t) => { before[t.key] = bc.getTargetValue(t.key).model; });
+
+        const probe = 'uji/target-vision';
+        bc.setTargetModel('vision', probe, null, false);
+        assert.strictEqual(bc.getTargetValue('vision').model, probe, 'Target vision harus berubah');
+        assert.strictEqual(bc.getTargetValue('chat').model, before.chat, 'Chat tidak boleh ikut berubah');
+        assert.strictEqual(bc.getTargetValue('fallback').model, before.fallback,
+            'Fallback tidak boleh ikut berubah');
+
+        // Vision manager harus membaca nilai target, bukan konstanta.
+        const vm = require('./src/utils/visionManager');
+        assert.strictEqual(vm.getVisionConfig().model, probe,
+            'visionManager harus memakai model dari target');
+
+        // Kembalikan: kalau sebelumnya kosong, hapus override-nya.
+        if (before.vision) {
+            bc.setTargetModel('vision', before.vision, null, false);
+        } else {
+            bc.clearTargetOverride('vision');
+        }
+        assert.strictEqual(bc.getTargetValue('vision').model, before.vision,
+            'Target vision harus kembali seperti semula');
+        console.log(' -> PASS: selector 4 target, TTL, dan isolasi target benar');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 
