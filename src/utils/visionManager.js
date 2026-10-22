@@ -239,20 +239,33 @@ async function describeImage(imageUrl, prompt = null, options = {}) {
         return null;
     }
 
-    // Model eksplisit -> satu percobaan saja, karena user sudah menentukan.
     const cfg = getVisionConfig();
+
+    // Model eksplisit dicoba lebih dulu. Kalau gagal (rate limit, gangguan
+    // provider), kandidat lain tetap dicoba supaya gambar tidak hilang begitu
+    // saja — dengan catatan model eksplisit tetap jadi prioritas.
     if (options.model || cfg.model) {
-        return tryDescribe(imageUrl, prompt, options.model || cfg.model, options);
+        const preferred = options.model || cfg.model;
+        const text = await tryDescribe(imageUrl, prompt, preferred, options);
+        if (text) return text;
+
+        console.warn(
+            `[VisionManager] Model pilihan (${preferred}) gagal, mencoba kandidat lain.`
+        );
     }
 
     const candidates = await getVisionCandidates();
     if (!candidates.length) {
-        return tryDescribe(imageUrl, prompt, await resolveVisionModel(), options);
+        return null;
     }
 
     // Coba beberapa kandidat teratas. Model yang gagal tidak dicoba lagi.
     const tried = [];
     for (const model of candidates.slice(0, cfg.maxAttempts)) {
+        // Lewati model pilihan yang barusan gagal, jangan ulangi.
+        if (options.model || cfg.model) {
+            if (model === (options.model || cfg.model)) continue;
+        }
         if (failedVisionModels.has(model)) continue;
         tried.push(model);
         const text = await tryDescribe(imageUrl, prompt, model, options);
@@ -265,7 +278,7 @@ async function describeImage(imageUrl, prompt = null, options = {}) {
 
     console.warn(
         `[VisionManager] Semua kandidat gagal (${tried.join(', ')}). ` +
-        'Set vision.model di config.yaml untuk memilih model tertentu.'
+        'Periksa vision.model di config.yaml dan status provider.'
     );
     return null;
 }

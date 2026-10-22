@@ -40,9 +40,11 @@ cooldown:
 # provider merujuk ke salah satu name di daftar providers di atas.
 vision:
   provider: zenmux
-  # Kosongkan supaya model dipilih otomatis dari katalog /models
-  # berdasarkan kapabilitas vision yang sebenarnya.
-  model: ""
+  # Sengaja diisi, bukan dikosongkan. Vision manager hanya cadangan saat model
+  # chat tidak bisa gambar, dan auto-pilih dari katalog berisiko jatuh ke model
+  # mahal. Model ini gratis dan terbukti membaca teks dengan benar.
+  # Kalau sering kena rate limit, ganti ke qwen/qwen3.7-flash (~$0.00004/gambar).
+  model: dots-studio/dots3-note-prev
   timeout_ms: 60000
   max_dimension: 1024
   # Di bawah jumlah token ini, gambar dianggap tidak benar-benar diproses.
