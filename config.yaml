@@ -1,5 +1,5 @@
 model:
-  default: ollama/nemotron-3-ultra
+  default: oc/glm-5.3-flash-free
   provider: 9router-local
 providers:
   - name: 9router-local
@@ -20,7 +20,7 @@ fallback_model:
 
 # ── Provider cadangan terakhir (Groq) ───────────────────────────────────────
 groq:
-  model: llama-3.3-70b-versatile
+  model: openai/gpt-oss-120b
 
 # ── LLM lokal (KoboldCpp / llama.cpp) ───────────────────────────────────────
 local_llm:
@@ -54,7 +54,7 @@ vision:
 # Terpisah dari vision gambar karena batas ukuran dan jalur kompresinya beda.
 vision_video:
   provider: zenmux
-  model: z-ai/glm-4.6v-flash-free
+  model: z-ai/glm-5.3-flash
   timeout_ms: 240000
   # Batas unduh dari Discord. Clip 30 detik biasanya ~50MB.
   download_max_bytes: 104857600

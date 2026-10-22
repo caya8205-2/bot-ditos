@@ -155,7 +155,7 @@ function buildNavRow(sessionId, page, totalPages) {
             .setDisabled(page >= totalPages - 1),
         new ButtonBuilder()
             .setCustomId(`model_save:${sessionId}`)
-            .setLabel('💾 Simpan ke config.yaml')
+            .setLabel('💾 Simpan')
             .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
             .setCustomId(`model_cancel:${sessionId}`)
@@ -317,12 +317,21 @@ module.exports = {
         if (kind === 'model_save' && interaction.isButton()) {
             const model = session.activeModel;
             const saved = botConfig.saveActiveModelToDisk(model, session.providerName);
-            await interaction.reply({
+
+            // Embed selector dihapus setelah disimpan supaya tidak menggantung
+            // di channel sebagai pesan yang sudah tidak berguna.
+            await interaction.deferUpdate();
+            await interaction.message.delete().catch(() => {});
+
+            // Konfirmasi dikirim biasa (bukan ephemeral) supaya semua orang
+            // di channel tahu model sudah berganti.
+            await interaction.followUp({
                 content: saved
-                    ? `💾 Tersimpan: \`${model}\` di provider \`${session.providerName}\`. Bertahan setelah restart.`
-                    : '❌ Gagal menulis config.yaml. Cek log bot.',
-                ephemeral: true,
+                    ? `✅ Model disimpan: \`${model}\``
+                    : '❌ Gagal menyimpan model. Cek log bot.',
             });
+
+            sessions.delete(sessionId);
             return true;
         }
 

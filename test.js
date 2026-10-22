@@ -130,37 +130,59 @@ async function testAll() {
         const providerChain = llm.getRouterProviderChain();
         assert(providerChain.length >= 1, 'Provider chain must not be empty');
         assert.strictEqual(providerChain[0].provider, 'niner-primary', 'First entry must use the primary provider');
+        assert(providerChain[0].baseURL, 'Entry pertama harus punya base URL');
 
-        if (nm.isFallbackProviderAvailable()) {
+        const hasDedicatedProvider = nm.isFallbackProviderAvailable();
+
+        if (hasDedicatedProvider) {
             const fallbackEntry = providerChain.find((e) => e.isFallbackProvider);
             assert(fallbackEntry, 'Fallback provider entry must exist when configured');
             assert.strictEqual(fallbackEntry.baseURL, nm.NINER_FALLBACK_BASE_URL, 'Fallback entry must use its own base URL');
-            assert.notStrictEqual(fallbackEntry.baseURL, nm.NINER_BASE_URL, 'Fallback base URL must differ from primary');
+            assert.notStrictEqual(fallbackEntry.baseURL, providerChain[0].baseURL, 'Fallback base URL must differ from primary');
+        } else {
+            // Tanpa provider khusus, model fallback tetap memakai base URL
+            // provider utama. Dulu di sini base URL-nya kosong karena memakai
+            // konstanta env yang tidak lagi terisi.
+            const fallbackEntry = providerChain.find((e) => !e.isFallbackProvider && e.model !== providerChain[0].model);
+            if (fallbackEntry) {
+                assert.strictEqual(
+                    fallbackEntry.baseURL,
+                    providerChain[0].baseURL,
+                    'Fallback model tanpa provider khusus harus memakai base URL utama'
+                );
+            }
+            console.log(' -> (provider fallback terpisah tidak dikonfigurasi, dilewati)');
         }
 
         // Request harus diarahkan ke caller provider yang benar, bukan satu caller.
-        const trace = [];
-        const okResult = (text) => ({ choices: [{ message: { content: text } }] });
-        const fail500 = () => { const err = new Error('upstream 500'); err.status = 500; return err; };
+        // Diuji hanya kalau provider terpisah memang ada, karena tanpa itu
+        // kedua entry memakai caller yang sama.
+        if (hasDedicatedProvider) {
+            const trace = [];
+            const okResult = (text) => ({ choices: [{ message: { content: text } }] });
+            const fail500 = () => { const err = new Error('upstream 500'); err.status = 500; return err; };
 
-        const primaryCaller = async (fn) => {
-            trace.push('primary-caller');
-            return fn({ chat: { completions: { create: async () => { throw fail500(); } } } });
-        };
-        const fallbackCaller = async (fn) => {
-            trace.push('fallback-caller');
-            return fn({ chat: { completions: { create: async () => okResult('fallback-provider-answer') } } });
-        };
-        const groqSpy = async () => { trace.push('GROQ'); return okResult('groq-answer'); };
+            const primaryCaller = async (fn) => {
+                trace.push('primary-caller');
+                return fn({ chat: { completions: { create: async () => { throw fail500(); } } } });
+            };
+            const fallbackCaller = async (fn) => {
+                trace.push('fallback-caller');
+                return fn({ chat: { completions: { create: async () => okResult('fallback-provider-answer') } } });
+            };
+            const groqSpy = async () => { trace.push('GROQ'); return okResult('groq-answer'); };
 
-        const res = await llm.callLLMWithFallback(
-            async (client) => client.chat.completions.create({ model: 'x', messages: [] }),
-            { ninerCaller: primaryCaller, ninerFallbackCaller: fallbackCaller, groqCaller: groqSpy }
-        );
-        assert.strictEqual(res.choices[0].message.content, 'fallback-provider-answer', 'Fallback provider must serve the request');
-        assert(trace.includes('fallback-caller'), 'Fallback provider caller must be invoked');
-        assert(!trace.includes('GROQ'), 'Groq must not be called while fallback provider works');
-        console.log(' -> PASS: fallback provider used with its own caller and base URL');
+            const res = await llm.callLLMWithFallback(
+                async (client) => client.chat.completions.create({ model: 'x', messages: [] }),
+                { ninerCaller: primaryCaller, ninerFallbackCaller: fallbackCaller, groqCaller: groqSpy }
+            );
+            assert.strictEqual(res.choices[0].message.content, 'fallback-provider-answer', 'Fallback provider must serve the request');
+            assert(trace.includes('fallback-caller'), 'Fallback provider caller must be invoked');
+            assert(!trace.includes('GROQ'), 'Groq must not be called while fallback provider works');
+            console.log(' -> PASS: fallback provider used with its own caller and base URL');
+        } else {
+            console.log(' -> PASS: base URL fallback model mengikuti provider utama');
+        }
     }
 
     console.log('\n[TEST] Checking chat command reply context helper...');

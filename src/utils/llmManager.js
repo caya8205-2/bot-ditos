@@ -87,7 +87,9 @@ function getRouterProviderChain() {
         chain.push({
             model: getNinerFallbackModel(),
             provider: useDedicatedProvider ? 'niner-fallback' : 'niner-primary',
-            baseURL: useDedicatedProvider ? NINER_FALLBACK_BASE_URL : NINER_BASE_URL,
+            // Tanpa provider khusus, model fallback ikut provider utama yang
+            // sedang aktif (bisa berasal dari config.yaml, bukan hanya env).
+            baseURL: useDedicatedProvider ? NINER_FALLBACK_BASE_URL : primaryProvider.baseURL,
             isFallbackProvider: useDedicatedProvider,
         });
     }
