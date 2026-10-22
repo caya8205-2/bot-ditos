@@ -74,6 +74,11 @@ function estimateTokens(value) {
                 if (typeof item === 'string') return sum + estimateTokens(item);
                 if (item?.type === 'text') return sum + estimateTokens(item.text);
                 if (item?.type === 'image_url') return sum + 250; // standard image token estimate
+                // Video dikirim sebagai part `file` berisi data URL base64.
+                // Jangan pernah diukur dari panjang base64-nya: 8MB video jadi
+                // jutaan token palsu, memicu trimming yang membuang videonya.
+                if (item?.type === 'file') return sum + 1000;
+                if (item?.type === 'input_audio') return sum + 500;
                 return sum + estimateTokens(JSON.stringify(item));
             }, 0);
         }

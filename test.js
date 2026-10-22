@@ -372,6 +372,42 @@ async function testAll() {
         console.log(' -> PASS: selector 4 target, TTL, dan isolasi target benar');
     }
 
+    console.log('\n[TEST] Checking video token accounting and refusal handling...');
+    {
+        const pb = require('./src/utils/promptBuilder');
+        const vv = require('./src/utils/videoVisionManager');
+
+        // Base64 video tidak boleh dihitung sebagai teks. Dulu 8MB video jadi
+        // ~2.7 juta token, memicu trimming yang membuang videonya.
+        const bigB64 = 'A'.repeat(10 * 1024 * 1024);
+        const videoPart = {
+            type: 'file',
+            file: { filename: 'v.mp4', file_data: `data:video/mp4;base64,${bigB64}` },
+        };
+        const tokens = pb.estimateTokens([{ type: 'text', text: 'halo' }, videoPart]);
+        assert(tokens < 5000, `Token video tidak boleh jutaan (dapat ${tokens})`);
+        assert(tokens > 500, 'Video tetap harus punya bobot token');
+
+        // Video tidak boleh dibuang oleh budget.
+        const prepared = pb.preparePromptMessages([
+            { role: 'system', content: 'persona '.repeat(100) },
+            { role: 'user', content: [{ type: 'text', text: 'cek video' }, videoPart] },
+        ], { label: 'uji' });
+        const list = Array.isArray(prepared) ? prepared : prepared.messages;
+        const last = list[list.length - 1].content;
+        assert(Array.isArray(last) && last.some((p) => p.type === 'file'),
+            'Video tidak boleh dipangkas oleh token budget');
+
+        // Penolakan video harus dikenali, jawaban normal tidak.
+        assert(vv.looksLikeVideoRefusal('file-nya ga nyampe ke gue'),
+            'Penolakan berbahasa santai harus terdeteksi');
+        assert(vv.looksLikeVideoRefusal('Saya tidak bisa memproses video secara langsung'),
+            'Penolakan formal harus terdeteksi');
+        assert(!vv.looksLikeVideoRefusal('Videonya keren, 4-0 sama Dynamo Kyiv'),
+            'Jawaban normal tidak boleh dianggap penolakan');
+        console.log(' -> PASS: token video wajar dan penolakan terdeteksi');
+    }
+
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');
 }
 

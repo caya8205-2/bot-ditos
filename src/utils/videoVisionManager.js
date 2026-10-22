@@ -101,6 +101,30 @@ function isModelMarkedVideoUnsupported(model) {
     return videoUnsupportedModels.has(model);
 }
 
+/**
+ * Deteksi jawaban yang menolak memproses video, bukan mendeskripsikannya.
+ *
+ * Sebagian gateway melaporkan dukungan video di katalog padahal model di
+ * baliknya tidak bisa menerimanya. Model lalu menjawab "saya tidak bisa
+ * memproses video" dan, kalau lolos, jawaban itu sampai ke chat seolah-olah
+ * bot sudah menonton videonya.
+ */
+function looksLikeVideoRefusal(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    const patterns = [
+        /tidak (bisa|dapat|mampu) (memproses|melihat|menonton|membuka|menerima|mengakses).{0,30}(video|file)/,
+        /tidak menerima (video|file)/,
+        /video (apa pun|tersebut|ini)?.{0,20}tidak (masuk|diterima|terkirim|sampai)/,
+        /tidak (punya|memiliki) kemampuan.{0,40}(video|melihat|memproses)/,
+        /(file|videonya?).{0,25}(tidak|gak|ga) (nyampe|sampai|masuk|terkirim)/,
+        /cannot (process|view|watch|access|open).{0,30}(video|file)/,
+        /not (able|support).{0,30}(video)/,
+        /no video.{0,20}(received|provided|attached)/,
+    ];
+    return patterns.some((re) => re.test(lower));
+}
+
 let visionClient = null;
 
 function isVideoProviderAvailable() {
@@ -461,6 +485,18 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
             return null;
         }
 
+        // Model bisa menerima token media tapi tetap menolak memproses video,
+        // misalnya karena kemampuan itu tidak aktif di balik gateway. Jawaban
+        // seperti ini bukan deskripsi video, jadi jangan diteruskan ke chat.
+        if (looksLikeVideoRefusal(text)) {
+            console.warn(
+                `[VisionVideo] Model "${model}" menolak memproses video: ` +
+                `"${text.slice(0, 120)}"`
+            );
+            markModelVideoUnsupported(model);
+            return null;
+        }
+
         console.log(
             `[VisionVideo] Selesai (${(video.bytes / 1024 / 1024).toFixed(1)}MB) -> ` +
             `${text.length} karakter`
@@ -495,5 +531,6 @@ module.exports = {
     analyzeImageWithVisionModel,
     markModelVideoUnsupported,
     isModelMarkedVideoUnsupported,
+    looksLikeVideoRefusal,
     videoUnsupportedModels,
 };

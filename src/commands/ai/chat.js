@@ -4,6 +4,8 @@ const { MAX_USER_NOTES, MAX_GLOBAL_NOTES, MAX_CHANNEL_CONTEXT, MAX_CHANNEL_HISTO
 const { callLLMWithFallback, LLM_MODEL, getActiveChatModelInfo, isVisionSupported, isVideoSupported } = require('../../utils/llmManager');
 const { preparePromptMessages } = require('../../utils/promptBuilder');
 const { resolveMemberFuzzy, extractReactionAndCleanReply } = require('../../utils/helpers');
+const { looksLikeVideoRefusal } = require('../../utils/videoVisionManager');
+const { extractFrameGrid } = require('../../utils/videoFrameSampler');
 const {
     getImageAttachments,
     getVideoAttachments,
@@ -14,6 +16,71 @@ const {
     resolveReferencedMessage,
 } = require('../../utils/messageContext');
 const { OWNER_ID } = require('../../config');
+
+/**
+ * Ulangi permintaan dengan grid frame video, dipakai ketika model menolak
+ * video utuh meski katalog menyatakan video-capable.
+ *
+ * @returns {Promise<string|null>} balasan model, atau null kalau tetap gagal
+ */
+async function retryWithFrameGrid(message, videoCandidates, baseText) {
+    try {
+        const gridParts = [];
+        for (const candidate of videoCandidates.slice(0, 1)) {
+            const url = candidate?.attachment?.url;
+            if (!url) continue;
+            const grid = await extractFrameGrid(url);
+            if (!grid) continue;
+            gridParts.push({ type: 'text', text: `${candidate.label} (grid frame video):` });
+            gridParts.push({ type: 'image_url', image_url: { url: grid.dataUrl } });
+            console.log(`[Chat] Retry dengan grid ${grid.frames} frame`);
+        }
+
+        if (!gridParts.length) {
+            console.warn('[Chat] Grid frame gagal dibuat, tidak bisa retry.');
+            return null;
+        }
+
+        const completion = await callLLMWithFallback(async (client) => {
+            return await client.chat.completions.create({
+                model: LLM_MODEL,
+                messages: preparePromptMessages([
+                    {
+                        role: 'system',
+                        content:
+                            'Kamu adalah Bot Ditos. Gaya bicara santai, casual, campur Indonesia + English dikit. ' +
+                            'Pake gue/lu, jangan aku/kamu. Jawaban pendek atau sedang aja.',
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            {
+                                type: 'text',
+                                text:
+                                    `${message.author.username} bilang: ${baseText}\n\n` +
+                                    'Gambar di bawah adalah beberapa frame dari video yang dikirim. ' +
+                                    'Komentari isinya secara natural, jangan bilang tidak bisa melihat video.',
+                            },
+                            ...gridParts,
+                        ],
+                    },
+                ], { label: 'chat-video-retry' }),
+                temperature: 0.7,
+                max_tokens: 1200,
+            });
+        });
+
+        const text = completion.choices?.[0]?.message?.content?.trim();
+        if (!text || looksLikeVideoRefusal(text)) {
+            console.warn('[Chat] Retry frame grid juga gagal.');
+            return null;
+        }
+        return text;
+    } catch (error) {
+        console.warn('[Chat] Retry frame grid error:', error.message);
+        return null;
+    }
+}
 
 function filterChannelHistory(messages) {
     return messages.filter(m => {
@@ -352,11 +419,23 @@ module.exports = {
 
             const rawReply = completion.choices?.[0]?.message?.content?.trim();
 
-            if (!rawReply) {
+            // Model bisa mengaku tidak menerima video meski katalog menyatakan
+            // video-capable. Kalau itu terjadi dan ada video mode direct,
+            // ulangi sekali dengan grid frame sebagai gambar supaya isi video
+            // tetap terbaca.
+            let finalReply = rawReply;
+            const hasDirectVideo = videoEntries.some((v) => v.mode === 'direct');
+            if (hasDirectVideo && rawReply && looksLikeVideoRefusal(rawReply)) {
+                console.warn('[Chat] Model menolak video, ulangi dengan grid frame.');
+                const retry = await retryWithFrameGrid(message, videoCandidates, baseText);
+                if (retry) finalReply = retry;
+            }
+
+            if (!finalReply) {
                 return message.reply('Lagi ngeblank, coba tanya sekali lagi dong');
             }
 
-            const { reaction, cleanText } = extractReactionAndCleanReply(rawReply, message.guild);
+            const { reaction, cleanText } = extractReactionAndCleanReply(finalReply, message.guild);
             if (reaction) {
                 message.react(reaction).catch((err) => {
                     console.warn('[Chat] Gagal react:', err.message);
