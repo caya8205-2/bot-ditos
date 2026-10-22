@@ -44,10 +44,11 @@ vision:
   # atau saat pengiriman gambar langsung gagal. Karena itu biayanya nol selama
   # model chat tetap vision-capable.
   #
-  # z-ai/glm-5.3-flash: $0.075/M input, $0.25/M output (harga kampanye).
-  # Alternatif gratis yang juga terbukti bekerja: dots-studio/dots3-note-prev
-  # (ada di /models walau tidak tampil di halaman listing ZenMux).
-  model: z-ai/glm-5.3-flash
+  # dots-studio/dots3-note-prev: gratis, dan terbukti membaca teks dengan benar.
+  # Tidak tampil di halaman listing ZenMux tapi tersedia di /models.
+  # Kalau model ini gagal (misal preview dicabut), ganti ke z-ai/glm-5.3-flash
+  # ($0.075/M input, $0.25/M output).
+  model: dots-studio/dots3-note-prev
   timeout_ms: 60000
   max_dimension: 1024
   # Di bawah jumlah token ini, gambar dianggap tidak benar-benar diproses.
