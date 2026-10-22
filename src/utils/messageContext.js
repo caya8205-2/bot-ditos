@@ -320,12 +320,12 @@ function renderVideoParts(entries = []) {
     for (const entry of entries) {
         if (entry.mode === 'direct' && entry.dataUrl) {
             parts.push({ type: 'text', text: `${entry.label}:` });
+            // `video_url` adalah format yang diterima mayoritas model
+            // video-capable. `file` hanya diterima sebagian dan ditolak model
+            // lain, jadi ini yang dipakai lebih dulu.
             parts.push({
-                type: 'file',
-                file: {
-                    filename: entry.filename || 'video.mp4',
-                    file_data: entry.dataUrl,
-                },
+                type: 'video_url',
+                video_url: { url: entry.dataUrl },
             });
         } else if (entry.mode === 'frames' && entry.dataUrl) {
             parts.push({

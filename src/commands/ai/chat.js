@@ -314,7 +314,9 @@ module.exports = {
                 // Video utuh hanya boleh dikirim kalau model yang melayani
                 // memang video-capable. Part hasil deskripsi/frame aman untuk
                 // model vision biasa.
-                const safeVideoParts = videoParts.filter((p) => p.type !== 'file');
+                const safeVideoParts = videoParts.filter(
+                    (p) => p.type !== 'file' && p.type !== 'video_url'
+                );
                 const usableVideoParts = boundModel && isVideoSupported(boundModel)
                     ? videoParts
                     : safeVideoParts;

@@ -133,7 +133,9 @@ function isVideoProviderAvailable() {
 }
 
 function getVisionClient() {
-    if (!isVideoProviderAvailable()) {
+    const cfg = getVideoConfig();
+
+    if (!cfg.baseURL || !cfg.model) {
         throw new Error(
             'Provider video belum dikonfigurasi. Isi bagian `vision_video:` ' +
             'di config.yaml (provider dan model).'
@@ -434,29 +436,70 @@ async function analyzeVideoWithVisionModel(videoUrl, prompt = null, options = {}
             'dan teks yang terlihat di layar (jika ada). Fokus ke hal yang penting saja.';
 
         const client = getVisionClient();
-        const completion = await client.chat.completions.create({
-            model,
-            messages: [
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: prompt || defaultPrompt },
-                        // ZenMux menerima video lewat tipe `file` pada Chat
-                        // Completion. Field `file_data` boleh berisi data URL.
+
+        // Format part video berbeda antar provider. `video_url` diterima oleh
+        // mayoritas model video-capable, sementara `file` hanya diterima
+        // sebagian (dan model lain menolaknya dengan "type类型错误" atau
+        // "Supported values are text,image_url,video_url and video").
+        // Karena itu dicoba berurutan, bukan dipilih satu.
+        const videoPartBuilders = [
+            {
+                label: 'video_url',
+                build: () => ({ type: 'video_url', video_url: { url: video.dataUrl } }),
+            },
+            {
+                label: 'file',
+                build: () => ({
+                    type: 'file',
+                    file: {
+                        filename: options.filename || 'video.mp4',
+                        file_data: video.dataUrl,
+                    },
+                }),
+            },
+        ];
+
+        let completion = null;
+        let usedFormat = null;
+        let lastFormatError = null;
+
+        for (const builder of videoPartBuilders) {
+            try {
+                completion = await client.chat.completions.create({
+                    model,
+                    messages: [
                         {
-                            type: 'file',
-                            file: {
-                                filename: options.filename || 'video.mp4',
-                                file_data: video.dataUrl,
-                            },
+                            role: 'user',
+                            content: [
+                                { type: 'text', text: prompt || defaultPrompt },
+                                builder.build(),
+                            ],
                         },
                     ],
-                },
-            ],
-            // Model reasoning seperti GLM bisa menghabiskan seluruh budget di
-            // proses berpikir dan mengembalikan content kosong, jadi beri ruang.
-            max_tokens: 2000,
-        });
+                    // Model reasoning seperti GLM bisa menghabiskan seluruh budget
+                    // di proses berpikir dan mengembalikan content kosong.
+                    max_tokens: 2000,
+                });
+                usedFormat = builder.label;
+                break;
+            } catch (formatError) {
+                const detail =
+                    formatError?.response?.data?.error?.message ||
+                    formatError?.message ||
+                    String(formatError);
+                lastFormatError = detail;
+                console.warn(
+                    `[VisionVideo] Format "${builder.label}" ditolak model ${model}: ` +
+                    `${String(detail).slice(0, 140)}`
+                );
+            }
+        }
+
+        if (!completion) {
+            throw new Error(lastFormatError || 'Semua format video ditolak provider');
+        }
+
+        console.log(`[VisionVideo] Diterima via format "${usedFormat}"`);
 
         const choice = completion.choices?.[0];
         const text = choice?.message?.content?.trim();

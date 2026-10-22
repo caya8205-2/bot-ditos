@@ -232,7 +232,13 @@ function getProviders() {
 
 function getProviderByName(name) {
     if (!name) return null;
-    return getProviders().find((p) => p.name === name) || null;
+    const provider = getProviders().find((p) => p.name === name);
+    if (!provider) return null;
+
+    // Sertakan apiKey supaya pemanggil tidak perlu tahu soal key_env. Tanpa ini
+    // provider yang diambil berdasarkan nama akan tampak tanpa kredensial dan
+    // setiap request ditolak sebagai "Invalid API key".
+    return { ...provider, apiKey: resolveProviderKey(provider) };
 }
 
 /**

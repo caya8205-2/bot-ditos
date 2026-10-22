@@ -241,12 +241,25 @@ async function testAll() {
         const vv = require('./src/utils/videoVisionManager');
         const mc = require('./src/utils/messageContext');
 
-        // ZenMux memakai tipe `file` untuk video, bukan `video_url`.
+        // `video_url` adalah format yang diterima mayoritas model video-capable.
+        // Tipe `file` hanya diterima sebagian model; sebagian lain menolaknya
+        // dengan "type类型错误" atau "Supported values are
+        // text,image_url,video_url and video".
         const direct = mc.renderVideoParts([{
             mode: 'direct', dataUrl: 'data:video/mp4;base64,AAA', label: 'Video', filename: 'a.mp4',
         }]);
-        assert(direct.some((p) => p.type === 'file'), 'Video direct harus jadi part file');
-        assert(!direct.some((p) => p.type === 'video_url'), 'video_url bukan tipe yang dikenal');
+        assert(direct.some((p) => p.type === 'video_url'), 'Video direct harus jadi part video_url');
+        assert(!direct.some((p) => p.type === 'file'), 'Part file tidak boleh jadi format utama');
+
+        // Estimasi token untuk kedua format harus wajar, bukan dari panjang base64.
+        const pb2 = require('./src/utils/promptBuilder');
+        for (const part of [
+            { type: 'video_url', video_url: { url: 'data:video/mp4;base64,' + 'A'.repeat(1000000) } },
+            { type: 'file', file: { filename: 'a.mp4', file_data: 'data:video/mp4;base64,' + 'A'.repeat(1000000) } },
+        ]) {
+            const t = pb2.estimateTokens([part]);
+            assert(t < 5000, `Token ${part.type} tidak boleh meledak (dapat ${t})`);
+        }
 
         // Model yang tidak menerima video harus ditandai supaya tidak diulang.
         assert.strictEqual(vv.isModelMarkedVideoUnsupported('uji-model'), false);
