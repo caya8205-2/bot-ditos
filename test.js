@@ -206,8 +206,27 @@ async function testAll() {
     console.log('\n[TEST] Checking video capability detection...');
     {
         const { isVideoSupported, isVisionSupported } = require('./src/utils/visionHelper');
-        assert.strictEqual(isVideoSupported('gemini-2.5-flash'), true, 'Gemini 2.5 harus video-capable');
-        assert.strictEqual(isVideoSupported('z-ai/glm-4.6v-flash-free'), true, 'GLM 4.6V harus video-capable');
+        const bc = require('./src/utils/botConfig');
+        const cat = require('./src/utils/modelCatalog');
+
+        // Deteksi bergantung pada provider aktif: model yang sama bisa
+        // video-capable di ZenMux tapi tidak lewat 9router, karena 9router
+        // membuang lampiran video. Jadi hasilnya diuji sesuai konfigurasi.
+        const blocked = cat.getNoPassthroughBaseURLs();
+        const activeBlocked = blocked.has(bc.getActiveProvider().base_url);
+
+        if (activeBlocked) {
+            assert.strictEqual(isVideoSupported('gemini-2.5-flash'), false,
+                'lewat gateway yang membuang video, Gemini pun tidak dianggap video-capable');
+            assert.strictEqual(isVideoSupported('z-ai/glm-4.6v-flash-free'), false,
+                'model 9router tidak boleh dianggap video-capable');
+        } else {
+            assert.strictEqual(isVideoSupported('gemini-2.5-flash'), true,
+                'Gemini 2.5 harus video-capable di provider yang meneruskan video');
+            assert.strictEqual(isVideoSupported('z-ai/glm-4.6v-flash-free'), true,
+                'GLM 4.6V harus video-capable');
+        }
+
         assert.strictEqual(isVideoSupported('gpt-4o'), false, 'GPT-4o vision tapi bukan video');
         assert.strictEqual(isVideoSupported('deepseek-chat'), false, 'DeepSeek bukan video');
         assert.strictEqual(isVisionSupported('z-ai/glm-4.6v-flash-free'), true, 'GLM 4.6V harus vision');
@@ -419,6 +438,46 @@ async function testAll() {
         assert(!vv.looksLikeVideoRefusal('Videonya keren, 4-0 sama Dynamo Kyiv'),
             'Jawaban normal tidak boleh dianggap penolakan');
         console.log(' -> PASS: token video wajar dan penolakan terdeteksi');
+    }
+
+    console.log('\n[TEST] Checking video passthrough is blocked for gateways that drop it...');
+    {
+        const bc = require('./src/utils/botConfig');
+        const cat = require('./src/utils/modelCatalog');
+        const vh = require('./src/utils/visionHelper');
+
+        const section = bc.getSection('vision_video', {});
+        assert(Array.isArray(section.no_passthrough_providers),
+            'no_passthrough_providers harus berupa list');
+
+        const blocked = cat.getNoPassthroughBaseURLs();
+        assert(blocked.size > 0, 'harus ada provider yang diblokir');
+
+        // Base URL di daftar harus benar-benar ter-resolve dari config, bukan
+        // sekadar nama yang tidak dikenal.
+        for (const name of section.no_passthrough_providers) {
+            const provider = bc.getProviderByName(name);
+            assert(provider, `provider "${name}" harus ada di config`);
+            assert(blocked.has(provider.base_url),
+                `base URL "${name}" harus masuk daftar blokir`);
+        }
+
+        // Model dari gateway yang diblokir tidak boleh dianggap video-capable,
+        // walau katalognya bilang `videoInput: true`. Ini yang dulu membuat bot
+        // mengirim video ke model chat lalu menerima jawaban "file tidak sampai".
+        const chatModel = bc.getTargetValue('chat').model;
+        const activeProvider = bc.getActiveProvider();
+        if (blocked.has(activeProvider.base_url)) {
+            assert.strictEqual(vh.isVideoSupported(chatModel), false,
+                'model dari provider terblokir tidak boleh video-capable');
+            assert.strictEqual(await vh.isVideoSupportedAsync(chatModel), false,
+                'versi async juga harus menolak');
+            // Vision gambar tidak boleh ikut terblokir.
+            assert.strictEqual(vh.isVisionSupported(chatModel), true,
+                'vision gambar harus tetap aktif');
+        }
+
+        console.log(' -> PASS: video diblokir di provider, gambar tetap jalan');
     }
 
     console.log('\nALL SUITE TESTS PASSED SUCCESSFULLY.');

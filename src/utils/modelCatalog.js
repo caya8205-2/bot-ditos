@@ -115,6 +115,30 @@ function getCatalogProviders() {
     return providers;
 }
 
+function getNoPassthroughBaseURLs() {
+    const blocked = new Set();
+    let botConfig = null;
+    try {
+        botConfig = require('./botConfig');
+    } catch {
+        return blocked;
+    }
+
+    const section = botConfig.getSection('vision_video', {});
+    const names = Array.isArray(section.no_passthrough_providers)
+        ? section.no_passthrough_providers
+        : [];
+
+    for (const name of names) {
+        const provider = botConfig.getProviderByName(String(name).trim());
+        if (provider?.base_url) {
+            blocked.add(normalizeBaseURL(provider.base_url));
+        }
+    }
+
+    return blocked;
+}
+
 /**
  * Ambil dan cache katalog model dari sebuah provider.
  * @returns {Promise<Map<string, {vision: boolean, video: boolean}>|null>}
@@ -155,6 +179,7 @@ async function loadCatalog(provider) {
             byId.set(id, {
                 vision,
                 video,
+                providerBaseURL: provider.baseURL,
                 displayName: item.display_name || item.name || null,
             });
         }
@@ -185,7 +210,12 @@ async function lookupModelCapabilities(modelName) {
 
         const entry = catalog.get(modelName);
         if (entry) {
-            return { vision: entry.vision, video: entry.video, source: 'catalog' };
+            return {
+                vision: entry.vision,
+                video: entry.video,
+                providerBaseURL: entry.providerBaseURL || provider.baseURL,
+                source: 'catalog',
+            };
         }
     }
 
@@ -217,6 +247,40 @@ function isVideoSupportedFallback(modelName) {
 }
 
 /**
+ * Model dianggap tidak bisa video kalau providernya membuang lampiran video.
+ *
+ * 9router melaporkan `videoInput: true` untuk banyak model, termasuk model yang
+ * aslinya bisa video (Gemini). Begitu dipanggil lewat 9router, lampirannya tidak
+ * pernah sampai dan model menjawab bahwa tidak ada file. Karena itu klaim
+ * katalog tidak bisa dipercaya untuk provider seperti ini, dan video harus
+ * selalu lewat vision manager.
+ */
+function isVideoPassthroughBlocked(entry) {
+    if (!entry?.providerBaseURL) return false;
+    return getNoPassthroughBaseURLs().has(normalizeBaseURL(entry.providerBaseURL));
+}
+
+/**
+ * Apakah provider chat aktif membuang lampiran video.
+ *
+ * Dipakai saat katalog belum ter-cache: pola nama tidak boleh membuat model
+ * dianggap video-capable hanya karena namanya mengandung "glm-5" atau "gemini",
+ * padahal providernya tetap tidak meneruskan video.
+ */
+function isActiveChatProviderBlocked() {
+    const blocked = getNoPassthroughBaseURLs();
+    if (!blocked.size) return false;
+    try {
+        const botConfig = require('./botConfig');
+        const active = botConfig.getActiveProvider();
+        if (!active?.base_url) return false;
+        return blocked.has(normalizeBaseURL(active.base_url));
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Versi sinkron: pakai cache katalog kalau sudah ada, selain itu pola nama.
  * Dipakai di jalur yang tidak bisa await (mis. getActiveChatModelInfo).
  */
@@ -228,8 +292,14 @@ function isVisionSupportedSync(modelName) {
 
 function isVideoSupportedSync(modelName) {
     const hit = findCached(modelName);
-    if (hit) return hit.video;
-    return isVideoSupportedFallback(modelName);
+    if (!hit) {
+        // Katalog belum ter-cache: jangan percaya pola nama kalau provider chat
+        // aktif memang membuang lampiran video.
+        if (isActiveChatProviderBlocked()) return false;
+        return isVideoSupportedFallback(modelName);
+    }
+    if (!hit.video) return false;
+    return !isVideoPassthroughBlocked(hit);
 }
 
 function findCached(modelName) {
@@ -254,8 +324,12 @@ async function isVisionSupportedAsync(modelName) {
 
 async function isVideoSupportedAsync(modelName) {
     const hit = await lookupModelCapabilities(modelName);
-    if (hit) return hit.video;
-    return isVideoSupportedFallback(modelName);
+    if (!hit) {
+        if (isActiveChatProviderBlocked()) return false;
+        return isVideoSupportedFallback(modelName);
+    }
+    if (!hit.video) return false;
+    return !isVideoPassthroughBlocked(hit);
 }
 
 module.exports = {
@@ -263,6 +337,8 @@ module.exports = {
     getCatalogProviders,
     loadCatalog,
     lookupModelCapabilities,
+    isVideoPassthroughBlocked,
+    getNoPassthroughBaseURLs,
     warmCatalog,
     isVisionSupportedSync,
     isVideoSupportedSync,

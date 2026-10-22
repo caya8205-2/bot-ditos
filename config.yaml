@@ -60,13 +60,19 @@ vision:
 # Terpisah dari vision gambar karena batas ukuran dan jalur kompresinya beda.
 vision_video:
   provider: zenmux
-  # Model video harus dari ZenMux: 9router membuang lampiran video, jadi tidak
-  # ada satu pun modelnya yang benar-benar bisa video walau katalog menandai
-  # videoInput. Diuji dengan video dua fase teks: semua model 9router menolak.
+  # Provider yang membuang lampiran video, jadi model di bawahnya tidak boleh
+  # dianggap video-capable apa pun kata katalognya. 9router menandai banyak
+  # model `videoInput: true` padahal lampirannya tidak pernah sampai — bahkan
+  # Gemini yang aslinya bisa video jadi menolak lewat 9router. Karena itu video
+  # selalu diproses vision manager di bawah, bukan dikirim ke model chat.
+  no_passthrough_providers:
+    - 9router-local
+    - 9router-office
   #
-  # Terverifikasi bisa video di ZenMux (via part `video_url`):
-  #   z-ai/glm-4.6v, qwen/qwen3-vl-plus, bytedance/doubao-seed-1.8,
-  #   qwen/qwen3.8-flash, xiaomi/mimo-v2.6-flash, minimax/minimax-m3.1-flash
+  # Model video harus dari ZenMux. Terverifikasi bisa video (via part
+  # `video_url`): z-ai/glm-4.6v, qwen/qwen3-vl-plus,
+  # bytedance/doubao-seed-1.8, qwen/qwen3.8-flash, xiaomi/mimo-v2.6-flash,
+  # minimax/minimax-m3.1-flash.
   # Model Cina dipilih karena lebih patuh pada system prompt berkarakter.
   model: z-ai/glm-5.3-flash
   timeout_ms: 240000
